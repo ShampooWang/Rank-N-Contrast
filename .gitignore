@@ -2,4 +2,6 @@ AgeDB_models/*
 data/AgeDB/*
 data/AgeDB_proto/*
 logs/*
+scripts/*
 pics
+__pycache__/*

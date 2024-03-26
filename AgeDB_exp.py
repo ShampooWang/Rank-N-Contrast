@@ -56,7 +56,6 @@ def plot_2d_umap(feats, labels):
     reducer = umap.UMAP(random_state=42, n_neighbors=15, min_dist=0.1)
     embedding = reducer.fit_transform(feats)
 
-    # Step 4: Plotting
     plt.figure(figsize=(14, 8))
     scatter = plt.scatter(embedding[:, 0], embedding[:, 1], c=labels, cmap='GnBu')
     plt.colorbar(scatter, label='Age')
