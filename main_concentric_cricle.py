@@ -5,9 +5,12 @@ import logging
 import torch
 import time
 from model import Encoder, model_dict
-from dataset import *
 from utils import *
 from loss import PointwiseRankingLoss
+import numpy as np
+import pandas as pd
+from PIL import Image
+from torch.utils import data
 
 print = logging.info
 
@@ -29,10 +32,8 @@ def parse_option():
 
     parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
-    parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
-    parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
     parser.add_argument('--bias', type=bool, default=True, help='Bias of linear regressor')
 
     # Others
@@ -63,6 +64,25 @@ def parse_option():
 
     return opt
 
+class AgeDB(data.Dataset):
+    def __init__(self, data_folder, transform=None, split='train'):
+        df = pd.read_csv(f'./data/agedb.csv')
+        self.df = df[df['split'] == split]
+        self.split = split
+        self.data_folder = data_folder
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, index):
+        row = self.df.iloc[index]
+        label = np.asarray([row['age']]).astype(np.float32)
+        img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, label
 
 def set_loader(opt):
     train_transform = get_transforms(split='train', aug=opt.aug)

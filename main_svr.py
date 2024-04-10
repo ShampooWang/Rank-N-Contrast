@@ -30,16 +30,6 @@ def parseArgs():
 
     return parser.parse_args()
 
-def get_spherical_coordinates(dim):
-    """
-    https://en.wikipedia.org/wiki/N-sphere
-    """
-    phi = np.random.rand(dim-1) * np.array([np.pi] * (dim-2) + [2*np.pi])
-    sin_phi = np.insert(np.sin(phi), 0, 1) # 1, sin(phi_1), ..., sin(phi_{n-1})
-    cos_phi = np.insert(np.cos(phi), dim-1, 1) # cos(phi_1), cos(phi_2), ..., 1
-
-    return np.cumprod(sin_phi) * cos_phi
-
 def plot_2d_umap(feats, labels):
     print(feats.shape)
 

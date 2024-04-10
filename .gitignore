@@ -1,4 +1,4 @@
-AgeDB_models/*
+checkpoints/*
 data/AgeDB/*
 data/AgeDB_proto/*
 logs/*
