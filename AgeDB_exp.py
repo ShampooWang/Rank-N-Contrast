@@ -5,13 +5,14 @@ import torch
 import numpy as np
 from numpy.linalg import matrix_rank
 import os
+import pandas as pd
 
 from collections import defaultdict
 from scipy.spatial.distance import pdist, squareform
 from tqdm import tqdm
 
 from model import Encoder, model_dict, SupResNet
-from main_linear import set_loader, set_model
+from main_linear import set_loader
 from utils import *
 from loss import PointwiseRankingLoss
 
@@ -81,19 +82,20 @@ def get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criter
     losses = AverageMeter()
     criterion_l1 = torch.nn.L1Loss()
     age2feats = defaultdict(list)
+    label_2_error = defaultdict(list)
 
     with torch.no_grad():
-        for idx, (images, labels) in enumerate(tqdm(test_loader)):
-            images = images.cuda()
-            labels = labels.cuda()
+        for idx, returned_items in enumerate(tqdm(test_loader)):
+            images = returned_items["img"].cuda(non_blocking=True)
+            labels = returned_items["label"].cuda(non_blocking=True)
             bsz = labels.shape[0]
-            print(images.shape)
-            exit(0)
+
             if opt.sup_resnet:
                 features = model.extract_features(images)
                 output = model.fc(features)
             else:
                 features = model.encoder(images)
+
                 if regressor is not None:
                     output = regressor(features)
                 else:
@@ -101,16 +103,19 @@ def get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criter
                         scores = torch.matmul(features.double(), pretrain_criterion.anchor.unsqueeze(1)) # size [2B, 1]
                         features = features * scores / features.norm(dim=-1, p=2).unsqueeze(1)
 
-                    assert hasattr(model_opt, 'feature_norm')
-                    if model_opt.feature_norm == "l1":
+                    norm_type =  getattr(model_opt, 'feature_norm', "l2")
+                    if norm_type == "l1":
                         output = features.norm(dim=-1, p=1).unsqueeze(1)
-                    elif model_opt.feature_norm == "l2":
+                    elif norm_type == "l2":
                         output = features.norm(dim=-1, p=2).unsqueeze(1)
                     else:
-                        raise NotImplementedError(model_opt.feature_norm)
+                        raise NotImplementedError(norm_type)
                 
             loss_l1 = criterion_l1(output, labels)
             losses.update(loss_l1.item(), bsz)
+
+            for lab, error in zip(labels, (output - labels).abs()):
+                label_2_error[lab.item()].append(error.item())
 
             if extract_features:
                 for lab, feat in zip(labels, features):
@@ -120,7 +125,7 @@ def get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criter
         for age in age2feats:
             age2feats[age] = torch.stack(age2feats[age], dim=0).cpu().numpy()
 
-    return losses, age2feats    
+    return losses, age2feats, label_2_error
 
 def set_model(opt):
     model = Encoder(name=opt.model)
@@ -191,25 +196,46 @@ def main():
     # pretrain_criterion.load_state_dict(loss_params)
     # pretrain_criterion.cuda()
 
-    test_loss, age2feats = get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
+    test_loss, age2feats, label_2_error = get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
     if len(age2feats) > 0: 
         age2feats = dict(sorted(age2feats.items())) # Sort age2feats by the age
     feats = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
     print(f"Test loss: {test_loss.avg}")
 
+    # Plot errors distribution
+    # plot_error_distribution(
+    #     label_2_error=label_2_error,
+    #     save_path=f'./pics/error_distribution/norm_l2_obj_l1.png'
+    # )
+
+    # Plot feature norm distribution
+    # plot_feature_norm_distribution(
+    #     age2feats=age2feats,
+    #     save_path=f'./pics/norm_distribution/obj_corr.png'
+    # )
+
     # Plot 2d umap
-    if opt.sph:
-        sph_coor = np.stack([ get_spherical_coordinates(512, seed=i) for i in range(feats.shape[0]) ], axis=0)
-        feats = np.linalg.norm(feats, axis=1)[:, None] * sph_coor
+    # if opt.sph:
+    #     sph_coor = np.stack([ get_spherical_coordinates(512, seed=i) for i in range(feats.shape[0]) ], axis=0)
+    #     feats = np.linalg.norm(feats, axis=1)[:, None] * sph_coor
     plot_2d_umap(
         feats=feats,
         labels=sum([[age] * age2feats[age].shape[0] for age in age2feats], []),
-        save_path=f'./pics/2d_umap/{opt.dataset}_{opt.umap_pic_name}.png'
+        save_path=f'./pics/2d_umap/{opt.umap_pic_name}.png'
     )
         
     # Compute svd
     print(matrix_rank(feats))
     # plot_svd(feats, './pics/pwr_corr_atanh_svd.png')
+
+    # Plot norm confusion matrix:
+    # compute_norm_confusion_matrix(
+    #     age2feats,
+    #     save_dir="./pics/norm_cfmtx/",
+    #     img_name="obj_ordinal.png",
+    #     show_value=False
+    # )
+
 
 
 if __name__ == "__main__":

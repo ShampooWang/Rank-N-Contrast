@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 import math
 from utils import get_spherical_coordinates
 
@@ -70,12 +71,10 @@ class RnCLoss(nn.Module):
 
         return loss
     
+
 class CorrelationLoss(nn.Module):
-    def __init__(self, return_covariance: bool, arctanh_correlation: bool = True) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.return_covariance = return_covariance
-        self.arctanh_correlation = arctanh_correlation
-        self.normalizing_dimension = math.sqrt(512)
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor: 
         """Compute correlation loss between input and the target
@@ -87,17 +86,11 @@ class CorrelationLoss(nn.Module):
             torch.Tensor: size [label_dim]
         """
         target = target.detach()
+        covaraince = ((input - input.mean(0)) * (target - target.mean(0))).mean(0)
+        correlation = covaraince / (input.var(dim=0, unbiased=False).sqrt() * target.var(dim=0, unbiased=False).sqrt())
 
-        if self.return_covariance:
-            covaraince = ((input - input.mean(0)) * (target - target.mean(0))).mean(0)
-            return -1 * covaraince / self.normalizing_dimension
-        else:
-            covaraince = ((input - input.mean(0)) * (target - target.mean(0))).mean(0)
-            correlation = covaraince / (input.var(dim=0, unbiased=False).sqrt() * target.var(dim=0, unbiased=False).sqrt())
-            if self.arctanh_correlation:
-                return torch.atanh(-1 * correlation)
-            else:
-                return -1 * correlation
+        return -1 * correlation
+
 
 class PointwiseRankingLoss(nn.Module):
     def __init__(self, feature_norm = "l1", objective = "l1", dim_in: int = 512, data_csv_path: str ='./data/agedb.csv'):
@@ -109,7 +102,7 @@ class PointwiseRankingLoss(nn.Module):
         self.objective = objective
         if self.objective == "l1":
             self.obj_func = nn.L1Loss()
-            self.bias = nn.Parameter(torch.zeros(1), requires_grad=True)
+            # self.bias = nn.Parameter(torch.zeros(1), requires_grad=True)
         elif self.objective == "l2":
             self.obj_func = nn.MSELoss()
         elif self.objective == "covariance":
@@ -156,9 +149,109 @@ class PointwiseRankingLoss(nn.Module):
             return self.obj_func(feature_norms.unsqueeze(-1), labels + self.bias.exp())
     
 
+class PairwiseRankingLoss(nn.Module):
+    def __init__(self, temperature=2, label_diff='l1', feature_sim='l2', objective="l2"):
+        super(PairwiseRankingLoss, self).__init__()
+        self.t = temperature
+        self.label_diff_fn = LabelDifference(label_diff)
+        self.feature_sim_fn = FeatureSimilarity(feature_sim)
+        self.objective = objective
+
+        if self.objective == "l1":
+            self.obj_func = nn.L1Loss()
+        elif self.objective == "l2":
+            self.obj_func = nn.MSELoss()
+        elif self.objective == "correlation":
+            self.obj_func = CorrelationLoss()
+
+    def forward(self, features, labels):
+        # features: [bs, 2, feat_dim]
+        # labels: [bs, label_dim]
+        
+        features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+        labels = labels.repeat(2, 1)  # [2bs, label_dim]
+        N = features.shape[0]
+        device = features.device
+
+        label_diffs = self.label_diff_fn(labels)
+        logits = -1 * self.feature_sim_fn(features).div(self.t)
+        
+        # remove the lower triangular part
+        triu_mask = torch.ones((N,N), device=device).triu(diagonal=1).bool()
+        masked_logits = logits.masked_select(triu_mask)
+        masked_label_diffs = label_diffs.masked_select(triu_mask)
+
+        return self.obj_func(masked_logits, masked_label_diffs)
+    
+
+class DeltaOrderLoss(nn.Module):
+    def __init__(self, delta: float = 0.1, temperature: float = 2, label_diff: str = 'l1') -> None:
+        super(DeltaOrderLoss, self).__init__()
+        self.t = temperature
+        self.label_diff_fn = LabelDifference(label_diff)
+        assert 0 < delta < 1, f"The valid range of delta is (0,1), you assign delta as {delta}"
+        self.delta = delta
+    
+    def forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+        """Compute the delta-order loss
+
+        Args:
+            features (torch.Tensor): input features to compute the loss, size: [bs, 2, feat_dim]
+            labels (torch.LongTensor): corresponding labels, size: [bs, label_dim]
+
+        Returns:
+            torch.Tensor: the computed loss, size: [1]
+        """
+
+        features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+        labels = labels.repeat(2, 1)  # [2bs, label_dim]
+        N, D = features.shape
+        label_diffs = self.label_diff_fn(labels)
+        feature_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)      
+
+        # Remove diagonal
+        mask = (1 - torch.eye(N).to(features.device)).bool()
+        label_diffs = label_diffs.masked_select(mask).view(N, N - 1)
+        feature_dists = feature_dists.masked_select(mask).view(N, N - 1)
+        
+        # Sorting features by their relative label differences
+        with torch.no_grad():
+            sorted_label_diffs, sorted_indices = torch.sort(label_diffs, dim=1)
+            ranks = torch.stack(
+                [ torch.unique_consecutive(lab_diff, return_inverse=True)[-1] for lab_diff in sorted_label_diffs ], 
+                dim=0
+            )
+
+        feature_dists = torch.gather(feature_dists, 1, sorted_indices)
+        feature_dists_diffs = feature_dists[:, None, :] - feature_dists[:, :, None] # [N, N-1, N-1]
+        loss = 0.0
+        for k in range(N-2):
+            _lab_diffs = sorted_label_diffs[:, k, None] # [N, 1]
+            _dists_diffs = feature_dists_diffs[:, k, :] # [N, N-1]
+
+            # Compute postive logits
+            pos_mask = (_lab_diffs == sorted_label_diffs) # [N, N-1]
+            pos_mask[:, k] = False 
+            pos_margin_mask = _dists_diffs.abs() > self.delta
+            pos_logits = ((-1 * _dists_diffs.abs()).exp() * (pos_margin_mask & pos_mask)).sum(1)
+            pos_logits[pos_logits==0] = 1.0
+                
+            # Compute negative logits
+            neg_mask = (_lab_diffs < sorted_label_diffs)
+            neg_margins = (ranks - ranks[:, k, None]).div(self.delta) # [B x N-1]
+            neg_margin_mask = _dists_diffs > -1 * neg_margins
+            neg_logits = (_dists_diffs.exp() * (neg_margin_mask & neg_mask)).sum(1)
+            neg_logits[neg_logits==0] = 1.0
+            loss += -1 * (pos_logits / neg_logits).log().sum()
+
+        loss /= (N * (N-1))
+
+        return loss
+
+
 if __name__ == "__main__":
-    features = torch.rand([6, 2, 512], dtype=float)
-    labels = torch.randint(3, 6, [6, 1])
+    features = torch.rand([3, 2, 512], dtype=float)
+    labels = torch.randint(1, 80, [3, 1])
     print(labels)
-    loss = PointwiseRankingLoss(objective="ordinal").cuda()
+    loss = DeltaOrderLoss().cuda()
     print(loss(features.cuda(), labels.cuda()))

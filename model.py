@@ -144,30 +144,14 @@ model_dict = {
 
 
 class Encoder(nn.Module):
-    def __init__(self, name='resnet18', projection=False):
+    def __init__(self, name='resnet18'):
         super(Encoder, self).__init__()
         model_fun, dim_in = model_dict[name]
         self.encoder = model_fun()
-        self.projection = projection
-        if self.projection:
-            print("Initialize projector on the top of encoder")
-            sizes = [dim_in, dim_in, int(dim_in/4)]
-            layers = []
-            for i in range(len(sizes) - 2):
-                layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=False))
-                layers.append(nn.BatchNorm1d(sizes[i+1]))
-                layers.append(nn.ReLU(inplace=True))
-            layers.append(nn.Linear(sizes[-2], sizes[-1], bias=False))
-            layers.append(nn.BatchNorm1d(sizes[-1]))
-            self.projector = nn.Sequential(*layers)
 
     def forward(self, x):
-        feat = self.encoder(x)
 
-        if hasattr(self, "projector"):
-            feat = self.projector(feat)
-
-        return feat
+        return self.encoder(x)
 
 
 class SupResNet(nn.Module):

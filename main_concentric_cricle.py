@@ -9,18 +9,16 @@ from utils import *
 from loss import PointwiseRankingLoss
 import numpy as np
 import pandas as pd
-from PIL import Image
 from torch.utils import data
+from scipy.stats import ortho_group
+
 
 print = logging.info
 
-
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
-
     parser.add_argument('--print_freq', type=int, default=10, help='print frequency')
     parser.add_argument('--save_freq', type=int, default=50, help='save frequency')
-
     parser.add_argument('--batch_size', type=int, default=64, help='batch_size')
     parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=100, help='number of training epochs')
@@ -34,20 +32,23 @@ def parse_option():
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
-    parser.add_argument('--bias', type=bool, default=True, help='Bias of linear regressor')
+    parser.add_argument('--no_bias', action='store_true', help='Bias of linear regressor')
 
     # Others
-    parser.add_argument('--ordinal_pretraining', type=bool, default=False)
+    parser.add_argument('--seed', type=int, default=322)
+    parser.add_argument('--rank', type=int, default=512)
 
     opt = parser.parse_args()
 
-    opt.model_name = 'Regressor_{}_ep_{}_lr_{}_d_{}_wd_{}_mmt_{}_bsz_{}_trial_{}_bias_{}'. \
-        format(opt.dataset, opt.epochs, opt.learning_rate, opt.lr_decay_rate,
-               opt.weight_decay, opt.momentum, opt.batch_size, opt.trial, opt.bias)
+    opt.model_name = 'Regressor_rank{}_bias_{}_trial_{}'. \
+        format(opt.dataset, opt.rank, not opt.no_bias, opt.trial)
     
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-1][:-len('_last.pth')]
-    opt.save_folder = '/'.join(opt.ckpt.split('/')[:-1])
+
+    opt.save_folder = f'./checkpoints/concentric_circle/{opt.rank}_trial_{opt.trial}'
+    os.makedirs(opt.save_folder, exist_ok=True)
+    opt.umap_pic_path = os.path.join(opt.save_folder, "umap.png")
 
     logging.root.handlers = []
     logging.basicConfig(
@@ -65,12 +66,30 @@ def parse_option():
     return opt
 
 class AgeDB(data.Dataset):
-    def __init__(self, data_folder, transform=None, split='train'):
+    def __init__(self, opt, data_folder, feature_rank=512, split='train'):
         df = pd.read_csv(f'./data/agedb.csv')
         self.df = df[df['split'] == split]
         self.split = split
         self.data_folder = data_folder
-        self.transform = transform
+
+        # Create basis with assigned rank 
+        self.feature_rank = feature_rank
+        self.feature_basis = torch.from_numpy(ortho_group.rvs(dim=feature_rank, random_state=opt.seed)).float()
+        if self.feature_rank < 512:
+            self.feature_basis = torch.cat((self.feature_basis, torch.zeros(self.feature_rank, 512-self.feature_rank)), dim=1)
+        q, r = divmod(len(self.df) , self.feature_rank)
+        self.feature_basis = torch.cat([self.feature_basis]*q + [self.feature_basis[:r]], dim=0)
+        assert self.feature_basis.shape[0] == len(self.df)
+        print(f"Initialize feature basis with rank: {self.feature_rank}, feature basis shape: {self.feature_basis.shape}")
+
+        # Plot 2d umap for the created features
+        if split == "test":
+            labels = np.array(self.df['age'])
+            plot_2d_umap(
+                feats=labels[:, None] * self.feature_basis.numpy(),
+                labels=labels,
+                save_path=os.path.join(opt.save_folder, "test_uamp.png")
+            )
 
     def __len__(self):
         return len(self.df)
@@ -78,21 +97,19 @@ class AgeDB(data.Dataset):
     def __getitem__(self, index):
         row = self.df.iloc[index]
         label = np.asarray([row['age']]).astype(np.float32)
-        img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
-        if self.transform is not None:
-            img = self.transform(img)
+        feature = self.feature_basis[index] * (label * 10)
 
-        return img, label
+        return feature, label
 
 def set_loader(opt):
-    train_transform = get_transforms(split='train', aug=opt.aug)
+    train_transform = get_transforms(split='val', aug=opt.aug) # close the augmentation during training
     val_transform = get_transforms(split='val', aug=opt.aug)
     print(f"Train Transforms: {train_transform}")
     print(f"Val Transforms: {val_transform}")
 
-    train_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=train_transform, split='train')
-    val_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=val_transform, split='val')
-    test_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=val_transform, split='test')
+    train_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, feature_rank=opt.rank, split='train')
+    val_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, feature_rank=opt.rank, split='val')
+    test_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, feature_rank=opt.rank, split='test')
 
     print(f'Train set size: {train_dataset.__len__()}\t'
           f'Val set size: {val_dataset.__len__()}\t'
@@ -112,48 +129,17 @@ def set_loader(opt):
 
 
 def set_model(opt):
-    model = Encoder(name=opt.model)
     criterion = torch.nn.L1Loss()
-
-    dim_in = model_dict[opt.model][1]
     dim_out = get_label_dim(opt.dataset)
-    regressor = torch.nn.Linear(dim_in, dim_out, bias=opt.bias)
-    ckpt = torch.load(opt.ckpt, map_location='cpu')
-    state_dict = ckpt['model']
-
-    if torch.cuda.device_count() > 1:
-        model.encoder = torch.nn.DataParallel(model.encoder)
-    else:
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            k = k.replace("module.", "")
-            new_state_dict[k] = v
-        state_dict = new_state_dict
-
-    # Loading parameters for ordinal-type pretraining
-    if 'criterion' in ckpt:
-        if opt.ordinal_pretraining:
-            pretrain_criterion  = PointwiseRankingLoss(objective="ordinal")
-        else:
-            pretrain_criterion = PointwiseRankingLoss()
-        pretrain_criterion.load_state_dict(ckpt['criterion'])
-        pretrain_criterion.cuda()
-    else:
-        pretrain_criterion = None
-
-    model = model.cuda()
+    regressor = torch.nn.Linear(512, dim_out, bias=not opt.no_bias)
     regressor = regressor.cuda()
     criterion = criterion.cuda()
     torch.backends.cudnn.benchmark = True
 
-    model.load_state_dict(state_dict)
-    print(f"<=== Epoch [{ckpt['epoch']}] checkpoint Loaded from {opt.ckpt}!")
-
-    return model, regressor, criterion, pretrain_criterion
+    return regressor, criterion
 
 
-def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pretrain_criterion=None):
-    model.eval()
+def train(train_loader, regressor, criterion, optimizer, epoch, opt):
     regressor.train()
 
     batch_time = AverageMeter()
@@ -161,21 +147,13 @@ def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pret
     losses = AverageMeter()
 
     end = time.time()
-    for idx, (images, labels) in enumerate(train_loader):
+    for idx, (features, labels) in enumerate(train_loader):
         data_time.update(time.time() - end)
-
-        images = images.cuda(non_blocking=True)
         labels = labels.cuda(non_blocking=True)
         bsz = labels.shape[0]
 
         with torch.no_grad():
-            if hasattr(model, "projector"):
-                features = model.encoder(images)
-            else:
-                features = model(images)
-            if pretrain_criterion is not None and hasattr(pretrain_criterion, "anchor"):
-                scores = torch.matmul(features.double(), pretrain_criterion.anchor.unsqueeze(1)) # size [2B, 1]
-                features = features * scores / features.norm(dim=-1, p=2).unsqueeze(1)
+            features = features.cuda(non_blocking=True)
 
         output = regressor(features.detach())
         loss = criterion(output, labels)
@@ -198,27 +176,17 @@ def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pret
             sys.stdout.flush()
 
 
-def validate(val_loader, model, regressor, pretrain_criterion=None):
-    model.eval()
+def validate(val_loader, regressor):
     regressor.eval()
 
     losses = AverageMeter()
     criterion_l1 = torch.nn.L1Loss()
 
     with torch.no_grad():
-        for idx, (images, labels) in enumerate(val_loader):
-            images = images.cuda()
+        for idx, (features, labels) in enumerate(val_loader):
+            features = features.cuda()
             labels = labels.cuda()
             bsz = labels.shape[0]
-
-            if hasattr(model, "projector"):
-                features = model.encoder(images)
-            else:
-                features = model(images)
-            if pretrain_criterion is not None and hasattr(pretrain_criterion, "anchor"):
-                scores = torch.matmul(features.double(), pretrain_criterion.anchor.unsqueeze(1)) # size [2B, 1]
-                features = features * scores / features.norm(dim=-1, p=2).unsqueeze(1)
-
             output = regressor(features)
             loss_l1 = criterion_l1(output, labels)
             losses.update(loss_l1.item(), bsz)
@@ -229,11 +197,14 @@ def validate(val_loader, model, regressor, pretrain_criterion=None):
 def main():
     opt = parse_option()
 
+    # Fixing random seed for the reproducibility
+    set_seed(opt.seed)
+
     # build data loader
     train_loader, val_loader, test_loader = set_loader(opt)
 
     # build model and criterion
-    model, regressor, criterion, pretrain_criterion = set_model(opt)
+    regressor, criterion = set_model(opt)
 
     # build optimizer
     optimizer = set_optimizer(opt, regressor)
@@ -255,9 +226,9 @@ def main():
         adjust_learning_rate(opt, optimizer, epoch)
 
         # train for one epoch
-        train(train_loader, model, regressor, criterion, optimizer, epoch, opt)
+        train(train_loader, regressor, criterion, optimizer, epoch, opt)
 
-        valid_error = validate(val_loader, model, regressor)
+        valid_error = validate(val_loader, regressor)
         print('Val L1 error: {:.3f}'.format(valid_error))
 
         is_best = valid_error < best_error
@@ -282,7 +253,7 @@ def main():
     checkpoint = torch.load(save_file_best)
     regressor.load_state_dict(checkpoint['state_dict'])
     print(f"Loaded best model, epoch {checkpoint['epoch']}, best val error {checkpoint['best_error']:.3f}")
-    test_loss = validate(test_loader, model, regressor)
+    test_loss = validate(test_loader, regressor)
     to_print = 'Test L1 error: {:.3f}'.format(test_loss)
     print(to_print)
 

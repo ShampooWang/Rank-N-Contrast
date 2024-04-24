@@ -3,5 +3,5 @@ data/AgeDB/*
 data/AgeDB_proto/*
 logs/*
 scripts/*
-pics
+pics/*
 __pycache__/*

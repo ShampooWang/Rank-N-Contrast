@@ -4,12 +4,12 @@ import sys
 import logging
 import torch
 import time
-import wandb
+# import wandb
 
 from dataset import *
 from utils import *
 from model import Encoder
-from loss import PointwiseRankingLoss
+from loss import PointwiseRankingLoss, PairwiseRankingLoss, DeltaOrderLoss
 
 print = logging.info
 
@@ -33,22 +33,30 @@ def parse_option():
     parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
     parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
-    parser.add_argument('--projection', type=bool, default=False, help="Whether to add linear prjectors on the top of the model")
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
 
     parser.add_argument('--wandb', type=bool, default=True, help='Using wandb to recored the experiments')
 
-    # RnCLoss Parameters
+    # Loss Parameters
+    parser.add_argument('--loss_type', type=str, default="pointwise", choices=["pointwise", "pairwise", "deltaorder"])
     parser.add_argument('--temp', type=float, default=2, help='temperature')
-    parser.add_argument('--feature_norm', type=str, default='l1', choices=['l1', 'l2'], help='Norm of the features')
-    parser.add_argument('--objective', type=str, default='l2', choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal'], help='Objective funtion of pointwise ranking')
+    parser.add_argument('--feature_norm', type=str, default='l2', choices=['l1', 'l2'], help='Norm of the features')
+    parser.add_argument('--objective', type=str, default='l1', choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal'], help='Objective funtion of pointwise ranking')
+
+    # Delta order loss
+    parser.add_argument('--delta', type=float, default=0.2)
 
     opt = parser.parse_args()
 
-    opt.model_path = './checkpoints/{}_models'.format(opt.dataset)
-    opt.model_name = 'PwR_{}_{}_ep_{}_norm_{}_obj_{}_proj_{}_trial_{}'. \
-        format(opt.dataset, opt.model, opt.epochs, opt.feature_norm, opt.objective, opt.projection, opt.trial)
+    opt.model_path = f'./checkpoints/{opt.loss_type}'
+    if opt.loss_type == "deltaorder":
+        opt.model_name = '{}_{}_ep_{}_norm_{}_delta_{}_trial_{}'. \
+            format(opt.dataset, opt.model, opt.epochs, opt.feature_norm, opt.delta, opt.trial)
+    else:
+        opt.model_name = '{}_{}_ep_{}_norm_{}_obj_{}_trial_{}'. \
+            format(opt.dataset, opt.model, opt.epochs, opt.feature_norm, opt.objective, opt.trial)
+        
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-2]
 
@@ -92,8 +100,13 @@ def set_loader(opt):
 
 
 def set_model(opt):
-    model = Encoder(name=opt.model, projection=opt.projection)
-    criterion = PointwiseRankingLoss(feature_norm=opt.feature_norm, objective=opt.objective)
+    model = Encoder(name=opt.model)
+    if opt.loss_type == "pointwise":
+        criterion = PointwiseRankingLoss(feature_norm=opt.feature_norm, objective=opt.objective)
+    elif opt.loss_type == "pairwise":
+        criterion = PairwiseRankingLoss(feature_sim=opt.feature_norm, objective=opt.objective)
+    else:
+        criterion = DeltaOrderLoss(delta=opt.delta)
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:

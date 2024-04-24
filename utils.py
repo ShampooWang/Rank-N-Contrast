@@ -1,3 +1,4 @@
+import os
 from torchvision import transforms
 import math
 import torch
@@ -157,6 +158,77 @@ def plot_svd(feats, save_path):
     plt.ylabel('Log of singular values')
     plt.savefig(save_path)
 
+def plot_error_distribution(label_2_error, save_path):
+    label_2_error = { lab: sum(error)/len(error) for lab, error in label_2_error.items() }
+    label_2_error = dict(sorted(label_2_error.items()))
+    labels = [ f"{lab}" for lab in label_2_error.keys() ]
+    errors = list(label_2_error.values())
+    assert len(labels) == len(errors)
+    x = [ i+1 for i in range(len(labels)) ]
+    fig, ax = plt.subplots(figsize = (15,4))
+    ax.tick_params(axis='x', labelsize=7)
+    ax.bar(x, errors)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=65)
+    plt.title('Age vs. MAE')
+    plt.xlabel('Age')
+    plt.ylabel('MAE')
+    plt.savefig(save_path)
+
+def plot_feature_norm_distribution(age2feats, save_path):
+    age2feats_norm = { lab: np.linalg.norm(feats, axis=1).mean(0) for lab, feats in age2feats.items() }
+    labels = [ f"{lab}" for lab in age2feats.keys() ]
+    norms = list(age2feats_norm.values())
+    print(np.corrcoef(list(age2feats_norm.keys()), norms))
+    
+    assert len(labels) == len(norms)
+    x = [ i+1 for i in range(len(labels)) ]
+    fig, ax = plt.subplots(figsize = (15,4))
+    ax.tick_params(axis='x', labelsize=5)
+    ax.bar(x, norms)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=90)
+    plt.title('Age vs. Feature norm')
+    plt.xlabel('Age')
+    plt.ylabel('Feature norm')
+    plt.savefig(save_path)
+
+def compute_norm_confusion_matrix(label2feats: dict, save_dir: str, img_name: str, show_value=True):
+    os.makedirs(save_dir, exist_ok=True)
+    min_norms = { lab: np.linalg.norm(feats, axis=1).min(0) for lab, feats in label2feats.items() }
+    max_norms = { lab: np.linalg.norm(feats, axis=1).max(0) for lab, feats in label2feats.items() }
+    
+    label_num = len(label2feats)
+    confusion_matrix = np.zeros([label_num, label_num])
+    for i, (label, feats) in enumerate(label2feats.items()):
+        feats_norm = np.linalg.norm(feats, axis=1, keepdims=True) # size: N x 1
+        other_min_norms = np.array([ error for (lab, error) in min_norms.items() ])
+        other_max_norms = np.array([ error for (lab, error) in max_norms.items() ])
+        is_in = (feats_norm >= other_min_norms[None, :]) *  (feats_norm <= other_max_norms[None, :]) # size: N x K-1
+        confusion_matrix[i, :] = is_in.mean(0)
+
+    # Plot using imshow with a blue colormap
+    plt.figure(figsize=(60, 40) if show_value else (12,8))
+    plt.imshow(confusion_matrix, cmap='Oranges')
+    plt.colorbar()  # Show color scale
+
+    # Loop over data dimensions and create text annotations.
+    if show_value:
+        for i in range(confusion_matrix.shape[0]):
+            for j in range(confusion_matrix.shape[1]):
+                plt.text(j, i, np.round(confusion_matrix[i, j], 1), \
+                        ha="center", va="center", color="black")
+                
+    # weight_mtx = np.zeros([label_num, label_num])
+    # for i in range(1, label_num):
+    #     weight_mtx += np.diag(np.full(label_num-i, i), i)
+    #     weight_mtx += np.diag(np.full(label_num-i, i), -i)
+    
+    entropy = (confusion_matrix - np.eye(label_num)).sum()
+    plt.title(f'Non-diagonal value sum: {entropy}')
+
+    plt.savefig(os.path.join(save_dir, img_name))  
+
 
 def get_spherical_coordinates(dim, seed=322):
     """
@@ -169,3 +241,9 @@ def get_spherical_coordinates(dim, seed=322):
     cos_phi = np.insert(np.cos(phi), dim-1, 1) # cos(phi_1), cos(phi_2), ..., 1
 
     return np.cumprod(sin_phi) * cos_phi
+
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
