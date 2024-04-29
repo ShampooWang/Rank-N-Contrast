@@ -191,8 +191,52 @@ class DeltaOrderLoss(nn.Module):
         self.label_diff_fn = LabelDifference(label_diff)
         assert 0 < delta < 1, f"The valid range of delta is (0,1), you assign delta as {delta}"
         self.delta = delta
-    
+
     def forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+        """Compute the delta-order loss
+
+        Args:
+            features (torch.Tensor): input features to compute the loss, size: [bs, 2, feat_dim]
+            labels (torch.LongTensor): corresponding labels, size: [bs, label_dim]
+
+        Returns:
+            torch.Tensor: the computed loss, size: [1]
+        """
+
+        features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+        feature_norms = torch.norm(features, dim=1) # [2bs]
+        feature_norm_diffs = (feature_norms[:, None] - feature_norms[None, :]) # [2bs, 2bs]
+        labels = labels.repeat(2, 1)  # [2bs, label_dim]
+        label_diffs = (labels[:, None, :] - labels[None, :, :]).sum(dim=-1)   
+        N, D = features.shape
+        device = features.device
+
+        # Remove diagonal
+        mask = (1 - torch.eye(N).to(device)).bool()
+        label_diffs = label_diffs.masked_select(mask).view(N, N - 1)
+        feature_norm_diffs = feature_norm_diffs.masked_select(mask).view(N, N - 1)
+
+        # Compute positive logits
+        pos_mask = label_diffs == 0
+        pos_margin_mask = feature_norm_diffs.abs() >= self.delta
+        pos_logits = (feature_norm_diffs.abs() * (pos_mask & pos_margin_mask)).mean(1)
+
+        # Compute negative logits
+        neg_mask = ~pos_mask
+        neg_logits = (feature_norm_diffs - label_diffs.div(self.delta)).abs() * neg_mask
+        neg_logits = neg_logits.mean(1)
+
+        loss = (pos_logits + neg_logits).mean()
+
+        if loss.isnan():
+            print(pos_logits)
+            print(neg_logits)
+            exit(0)
+
+        return loss
+
+
+    def other_forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
         """Compute the delta-order loss
 
         Args:
@@ -248,10 +292,9 @@ class DeltaOrderLoss(nn.Module):
 
         return loss
 
-
 if __name__ == "__main__":
     features = torch.rand([3, 2, 512], dtype=float)
     labels = torch.randint(1, 80, [3, 1])
     print(labels)
-    loss = DeltaOrderLoss().cuda()
+    loss = DeltaOrderLoss(delta=0.5).cuda()
     print(loss(features.cuda(), labels.cuda()))
