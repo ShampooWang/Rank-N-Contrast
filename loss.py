@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 import math
-from utils import get_spherical_coordinates
+from exp_utils import get_spherical_coordinates
 
 
 class LabelDifference(nn.Module):
@@ -185,14 +185,13 @@ class PairwiseRankingLoss(nn.Module):
     
 
 class DeltaOrderLoss(nn.Module):
-    def __init__(self, delta: float = 0.1, temperature: float = 2, label_diff: str = 'l1') -> None:
+    def __init__(self, delta: float = 0.1, temperature: float = 2) -> None:
         super(DeltaOrderLoss, self).__init__()
         self.t = temperature
-        self.label_diff_fn = LabelDifference(label_diff)
         assert 0 < delta < 1, f"The valid range of delta is (0,1), you assign delta as {delta}"
         self.delta = delta
 
-    def forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+    def wo_anchor_forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
         """Compute the delta-order loss
 
         Args:
@@ -236,7 +235,7 @@ class DeltaOrderLoss(nn.Module):
         return loss
 
 
-    def other_forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
         """Compute the delta-order loss
 
         Args:
@@ -246,48 +245,51 @@ class DeltaOrderLoss(nn.Module):
         Returns:
             torch.Tensor: the computed loss, size: [1]
         """
-
         features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
         labels = labels.repeat(2, 1)  # [2bs, label_dim]
         N, D = features.shape
-        label_diffs = self.label_diff_fn(labels)
-        feature_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)      
+        label_diffs = labels - labels.transpose(1,0) # [2bs, 2bs]
+        z_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)      
 
         # Remove diagonal
         mask = (1 - torch.eye(N).to(features.device)).bool()
         label_diffs = label_diffs.masked_select(mask).view(N, N - 1)
-        feature_dists = feature_dists.masked_select(mask).view(N, N - 1)
-        
-        # Sorting features by their relative label differences
-        with torch.no_grad():
-            sorted_label_diffs, sorted_indices = torch.sort(label_diffs, dim=1)
-            ranks = torch.stack(
-                [ torch.unique_consecutive(lab_diff, return_inverse=True)[-1] for lab_diff in sorted_label_diffs ], 
-                dim=0
-            )
+        z_dists = z_dists.masked_select(mask).view(N, N - 1)
+        z_dist_diffs = z_dists[:, None, :] - z_dists[:, :, None] # [N, N-1, N-1]
+        label_abs_diffs = label_diffs.abs()
+        flipped_z_dist_diffs = label_diffs.sign()[:, None, :] * z_dist_diffs # flip z_{i,j} - z_{i,k} by sign(y_{i,j} - y_{i,k})
 
-        feature_dists = torch.gather(feature_dists, 1, sorted_indices)
-        feature_dists_diffs = feature_dists[:, None, :] - feature_dists[:, :, None] # [N, N-1, N-1]
+        # Get the ranks of the features by their relative label abosolute differences
+        with torch.no_grad():
+            asrt = torch.argsort(label_abs_diffs, dim=1)
+            ranks = torch.empty_like(asrt).scatter_ (1, asrt, torch.arange(N-1, device=features.device).repeat(N, 1)) # [N, N-1]
+
         loss = 0.0
-        for k in range(N-2):
-            _lab_diffs = sorted_label_diffs[:, k, None] # [N, 1]
-            _dists_diffs = feature_dists_diffs[:, k, :] # [N, N-1]
+        for k in range(N-1):
+            _lab_diffs = label_abs_diffs[:, k, None] # [N, 1]
+            _dists_diffs = flipped_z_dist_diffs[:, k, :] # [N, N-1]
 
             # Compute postive logits
-            pos_mask = (_lab_diffs == sorted_label_diffs) # [N, N-1]
-            pos_mask[:, k] = False 
-            pos_margin_mask = _dists_diffs.abs() > self.delta
-            pos_logits = ((-1 * _dists_diffs.abs()).exp() * (pos_margin_mask & pos_mask)).sum(1)
-            pos_logits[pos_logits==0] = 1.0
+            abs_dists_diffs = _dists_diffs.abs()
+            pos_mask = (_lab_diffs == label_abs_diffs) # [N, N-1]
+            pos_mask[:, k] = False
+            pos_logits_weight = (abs_dists_diffs - self.delta).sigmoid() * 2
+            # print(pos_logits_weight)
+            pos_logits = ((-1 * abs_dists_diffs) * pos_logits_weight * pos_mask).sum(1)
                 
             # Compute negative logits
-            neg_mask = (_lab_diffs < sorted_label_diffs)
-            neg_margins = (ranks - ranks[:, k, None]).div(self.delta) # [B x N-1]
-            neg_margin_mask = _dists_diffs > -1 * neg_margins
-            neg_logits = (_dists_diffs.exp() * (neg_margin_mask & neg_mask)).sum(1)
-            neg_logits[neg_logits==0] = 1.0
-            loss += -1 * (pos_logits / neg_logits).log().sum()
+            neg_mask = ~pos_mask
+            neg_margins = (ranks - ranks[:, k, None]).div(self.delta) # [N x N-1]
+            neg_logits_weight = (neg_margins - _dists_diffs).sigmoid() * 2
+            # print(neg_logits_weight)
+            neg_logits = ((-1 * _dists_diffs).exp() * neg_logits_weight * neg_mask).sum(1)
+            loss -= (pos_logits - torch.log(neg_logits)).sum()
 
+            if loss.isnan():
+                print(neg_logits_weight)
+                print(neg_margins - _dists_diffs)
+                exit(0)
+                
         loss /= (N * (N-1))
 
         return loss

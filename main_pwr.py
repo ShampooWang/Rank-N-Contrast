@@ -39,7 +39,7 @@ def parse_option():
     parser.add_argument('--wandb', type=bool, default=True, help='Using wandb to recored the experiments')
 
     # Loss Parameters
-    parser.add_argument('--loss_type', type=str, default="pointwise", choices=["pointwise", "pairwise", "deltaorder"])
+    parser.add_argument('--loss_type', type=str, default="pointwise", choices=["pointwise", "pairwise", "deltaorder_weight"])
     parser.add_argument('--temp', type=float, default=2, help='temperature')
     parser.add_argument('--feature_norm', type=str, default='l2', choices=['l1', 'l2'], help='Norm of the features')
     parser.add_argument('--objective', type=str, default='l1', choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal'], help='Objective funtion of pointwise ranking')

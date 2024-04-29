@@ -14,6 +14,7 @@ from tqdm import tqdm
 from model import Encoder, model_dict, SupResNet
 from main_linear import set_loader
 from utils import *
+from exp_utils import *
 from loss import PointwiseRankingLoss
 
 def parse_option():
@@ -40,7 +41,7 @@ def parse_option():
     parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
 
     # supervised resent
-    parser.add_argument('--sup_resnet', type=bool, default=False, help='whether to use supervised ResNet')
+    parser.add_argument('--sup_resnet', action='store_true', help='whether to use supervised ResNet')
 
     # regressor
     parser.add_argument('--add_regressor', type=bool, default=False, help='whether to add linear regressor module')
@@ -75,7 +76,7 @@ def parse_option():
 
     return opt
 
-def get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None, extract_features=True):
+def testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None, extract_features=True):
     model.eval()
     if regressor is not None:
         regressor.eval()
@@ -196,10 +197,12 @@ def main():
     # pretrain_criterion.load_state_dict(loss_params)
     # pretrain_criterion.cuda()
 
-    test_loss, age2feats, label_2_error = get_test_loss(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
+    test_loss, age2feats, label_2_error = testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
+    # Sort age2feats by the age
     if len(age2feats) > 0: 
-        age2feats = dict(sorted(age2feats.items())) # Sort age2feats by the age
-    feats = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
+        age2feats = dict(sorted(age2feats.items())) 
+    Z = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
+    y = sum([[age] * age2feats[age].shape[0] for age in age2feats], [])
     print(f"Test loss: {test_loss.avg}")
 
     # Plot errors distribution
@@ -218,15 +221,14 @@ def main():
     # if opt.sph:
     #     sph_coor = np.stack([ get_spherical_coordinates(512, seed=i) for i in range(feats.shape[0]) ], axis=0)
     #     feats = np.linalg.norm(feats, axis=1)[:, None] * sph_coor
-    plot_2d_umap(
-        feats=feats,
-        labels=sum([[age] * age2feats[age].shape[0] for age in age2feats], []),
-        save_path=f'./pics/2d_umap/{opt.umap_pic_name}.png'
-    )
+    # plot_2d_umap(
+    #     feats=Z,
+    #     labels=y,
+    #     save_path=f'./pics/2d_umap/{opt.umap_pic_name}.png'
+    # )
         
     # Compute svd
-    print(matrix_rank(feats))
-    # plot_svd(feats, './pics/pwr_corr_atanh_svd.png')
+    # print(matrix_rank(Z))
 
     # Plot norm confusion matrix:
     # compute_norm_confusion_matrix(
@@ -236,6 +238,8 @@ def main():
     #     show_value=False
     # )
 
+    # Check delta-order
+    check_delta_order(age2feats, delta=0.5)
 
 
 if __name__ == "__main__":
