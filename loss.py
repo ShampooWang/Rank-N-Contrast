@@ -249,7 +249,7 @@ class DeltaOrderLoss(nn.Module):
         labels = labels.repeat(2, 1)  # [2bs, label_dim]
         N, D = features.shape
         label_diffs = labels - labels.transpose(1,0) # [2bs, 2bs]
-        z_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)      
+        z_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)   
 
         # Remove diagonal
         mask = (1 - torch.eye(N).to(features.device)).bool()
@@ -261,9 +261,12 @@ class DeltaOrderLoss(nn.Module):
 
         # Get the ranks of the features by their relative label abosolute differences
         with torch.no_grad():
-            asrt = torch.argsort(label_abs_diffs, dim=1)
-            ranks = torch.empty_like(asrt).scatter_ (1, asrt, torch.arange(N-1, device=features.device).repeat(N, 1)) # [N, N-1]
+            ranks = torch.zeros_like(label_abs_diffs)
+            for i in range(N):
+                ranks[i] = torch.unique(label_abs_diffs[i], sorted=True, return_inverse=True)[-1]
+            # ranks = torch.unique(label_abs_diffs, sorted=True, return_inverse=True, dim=1)[-1]
 
+        # weight_fucntion = nn.Softplus()
         loss = 0.0
         for k in range(N-1):
             _lab_diffs = label_abs_diffs[:, k, None] # [N, 1]
@@ -273,30 +276,30 @@ class DeltaOrderLoss(nn.Module):
             abs_dists_diffs = _dists_diffs.abs()
             pos_mask = (_lab_diffs == label_abs_diffs) # [N, N-1]
             pos_mask[:, k] = False
-            pos_logits_weight = (abs_dists_diffs - self.delta).sigmoid() * 2
-            # print(pos_logits_weight)
+            pos_logits_weight = (abs_dists_diffs - self.delta).sigmoid()
             pos_logits = ((-1 * abs_dists_diffs) * pos_logits_weight * pos_mask).sum(1)
                 
             # Compute negative logits
             neg_mask = ~pos_mask
             neg_margins = (ranks - ranks[:, k, None]).div(self.delta) # [N x N-1]
-            neg_logits_weight = (neg_margins - _dists_diffs).sigmoid() * 2
-            # print(neg_logits_weight)
+            neg_logits_weight = (neg_margins - _dists_diffs).sigmoid()
             neg_logits = ((-1 * _dists_diffs).exp() * neg_logits_weight * neg_mask).sum(1)
             loss -= (pos_logits - torch.log(neg_logits)).sum()
 
             if loss.isnan():
+                print(pos_logits)
+                print(neg_logits)
                 print(neg_logits_weight)
                 print(neg_margins - _dists_diffs)
                 exit(0)
-                
+
         loss /= (N * (N-1))
 
         return loss
 
 if __name__ == "__main__":
-    features = torch.rand([3, 2, 512], dtype=float)
-    labels = torch.randint(1, 80, [3, 1])
+    features = torch.rand([256, 2, 512], dtype=float)
+    labels = torch.randint(1, 80, [256, 1])
     print(labels)
     loss = DeltaOrderLoss(delta=0.5).cuda()
     print(loss(features.cuda(), labels.cuda()))
