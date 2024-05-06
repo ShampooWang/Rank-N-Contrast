@@ -6,8 +6,13 @@ from torch.utils import data
 
 
 class AgeDB(data.Dataset):
-    def __init__(self, data_folder, transform=None, split='train'):
-        df = pd.read_csv(f'./data/agedb.csv')
+    def __init__(self, data_folder, transform=None, split='train', noise_scale=0.0):
+        if split == "train" and noise_scale > 0:
+            print(f"Adding gausain noise with scale {noise_scale} to the label.")
+            df = pd.read_csv(f'./data/agedb_noise_scale_{noise_scale}.csv')
+        else:
+            df = pd.read_csv(f'./data/agedb.csv')
+
         self.df = df[df['split'] == split]
         self.split = split
         self.data_folder = data_folder

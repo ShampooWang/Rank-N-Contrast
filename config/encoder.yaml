@@ -1,0 +1,50 @@
+data:
+  data_folder: './data'
+  dataset: AgeDB
+  aug: 'crop,flip,color,grayscale'
+  noise_scale: 0.0
+
+feature_extract:
+  # div_scale: 5.0
+  # normalized_by_D: True
+
+Encoder:
+  type: 'resnet18' # resnet50
+  trainer:
+    epochs: 400
+    batch_size: 256
+    num_workers: 4
+    print_freq: 10
+    save_freq: 50
+    save_curr_freq: 1
+    test_regression_freq: 100
+  optimizer:
+    learning_rate: 0.5
+    lr_decay_rate: 0.1
+    weight_decay: 0.0001
+    momentum: 0.9
+  loss:
+    loss_type: "RnC"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise"]
+    delta: 0.5
+    # temp: 2.0
+    # feature_norm: l2  # choices=['l1', 'l2']
+    # objective: l1  # choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal']
+
+Regressor:
+  bias: True
+  trainer: 
+    verbose: False
+    epochs: 100
+    batch_size: 64
+    num_workers: 4
+    print_freq: 10
+    save_freq: 50
+  optimizer:
+    learning_rate: 0.05
+    lr_decay_rate: 0.2
+    weight_decay: 0
+    momentum: 0.9
+
+# Others:
+  # ckpt_root: "/tmp2/jeffwang/Rank-N-Contrast/checkpoints"
+

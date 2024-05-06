@@ -144,59 +144,54 @@ def get_spherical_coordinates(dim, seed=322):
 
     return np.cumprod(sin_phi) * cos_phi
 
-def check_delta_order(age2feats: dict, delta: float):
+def check_delta_order(age2feats: dict):
     # Sort age2feats by the age
     age2feats = dict(sorted(age2feats.items())) 
 
     # Compute z_{i,j} and y_{i,j}
-    Z = np.concatenate([ feats for feats in age2feats.values() ], axis=0)  # [N, D]
-    Z_dists = np.linalg.norm((Z[None, :] - Z[:, None]), axis=-1) # [N, N]
-    y = np.array(sum([[age] * age2feats[age ].shape[0] for age in age2feats], [])) # [N]
+    z = np.concatenate([ feats for feats in age2feats.values() ], axis=0)  # [N, D]
+    z_dists = np.linalg.norm((z[None, :] - z[:, None]), axis=-1) # [N, N]
+    y = np.array(sum([[age] * age2feats[age].shape[0] for age in age2feats], [])) # [N]
     y_diffs = y[None, :] - y[:, None] # [N, N]
-    y_abs_diffs = np.abs(y_diffs) 
 
     # Remove diagonal
-    N = Z_dists.shape[0]
+    N = z_dists.shape[0]
     diagonal_mask = (1 - np.eye(N)).astype(bool)
-    Z_dists = Z_dists[diagonal_mask].reshape(N, N-1) # [N, N-1]
-    y_diffs = y_diffs[diagonal_mask].reshape(N, N-1)
-    y_abs_diffs = y_abs_diffs[diagonal_mask].reshape(N, N-1) # [N, N-1]
+    z_dists = z_dists[diagonal_mask].reshape(N, N-1) # [N, N-1]
+    y_abs_diffs = np.abs(y_diffs[diagonal_mask].reshape(N, N-1))
+    z_dist_diffs = z_dists[:, None, :] - z_dists[:, :, None]
+    del diagonal_mask
 
-    # Sort y_{i,j}
-    # sorted_y_abs_diffs = np.sort(y_abs_diffs, axis=1)
-    # sorted_indices = np.argsort(y_abs_diffs, axis=1)
-    # ranks = np.unique(sorted_y_abs_diffs, axis=1)
-    # Z_dists = np.take_along_axis(Z_dists, indices=sorted_indices, axis=1)
-    Z_dists_diffs = Z_dists[:, None, :] - Z_dists[:, :, None] # [N, N-1, N-1]
+    # Compute violation
+    result = 0.0 # result = {0.1: 0.0, 0.5: 0.0}
+    for j in tqdm(range(N-1)):
+        _y_abs_diffs = y_abs_diffs[:, j, None] # [N, 1]
+        _dist_diffs = z_dist_diffs[:, j, :] # d_ik - d_ij, size: [N, N-1]
+        _flipped_signs = np.sign(y_abs_diffs - y_abs_diffs[:, j, None]) # [N, N-1]
 
-
-    # y_diff_signs = np.sign(np.take_along_axis(y_diffs, indices=sorted_indices, axis=1))
-    y_diff_signs = np.sign(y_diffs)
-    # flipped_Z_dists_diffs = Z_dists_diffs * y_diff_signs[:, None, :] # flip z_{i,j} - z_{i,k} by sign(y_{i,j} - y_{i,k})
-    violation_percent = 0.0
-    for k in tqdm(range(N-1)):
-        _y_abs_diffs = y_abs_diffs[:, k, None] # [N, 1]
-        _dists_diffs = Z_dists_diffs[:, k, :] # [N, N-1]
-        
-        # Check y_{i,j} == y_{i,k} parts
         eq_mask = np.equal(_y_abs_diffs, y_abs_diffs) # [N, N-1]
-        eq_mask[:, k] = False
-        eq_violate_mask = np.abs(_dists_diffs) > delta
-        eq_violate_num = (eq_mask & eq_violate_mask).sum(1)
-
-        # Check y_{i,j} != y_{i,k} parts
+        eq_mask[:, j] = False
         neq_mask = ~eq_mask
-        _flipped_Z_dists_diffs = _dists_diffs * y_diff_signs
-        neq_violate_mask = _flipped_Z_dists_diffs < (1 / delta)
-        neq_violate_num = (neq_mask & neq_violate_mask).sum(1) 
-        _violation_percent = (eq_violate_num + neq_violate_num) / (N-1)
-        violation_percent += _violation_percent.mean(0)
-    
-    print(delta)
-    print(violation_percent * 100 / (N-1) )
-    
+        neq_mask[:, j] = False
+        _flipped_z_dist_diffs = _dist_diffs * _flipped_signs
 
+        # for delta in [0.1, 0.5]:
+        # Check y_{i,j} == y_{i,k} parts
+        # eq_violate_mask = np.abs(_dist_diffs) > delta
+        # eq_violate_num = (eq_mask & eq_violate_mask).sum(1)
+
+        # Check y_{i,j} != y_{i,k} parts    
+        neq_violate_mask = _flipped_z_dist_diffs < 0 # neq_violate_mask = _flipped_z_dist_diffs < (1 / delta)
+        neq_violate_num = (neq_mask & neq_violate_mask).sum(1) 
+
+        _violation_percent = neq_violate_num / (N-1) # _violation_percent = (eq_violate_num + neq_violate_num) / (N-1)
+        result += _violation_percent.mean(0) * 100 / (N-1) # result[delta] += _violation_percent.mean(0) * 100 / (N-1)
+
+    print(result)
+    
 if __name__ == "__main__":
-    age2feats = { i: np.random.rand(12, 512) for i in range(5) }
-    check_delta_order(age2feats=age2feats, delta=0.5)
+    from utils import set_seed
+    set_seed(322)
+    age2feats = { i: np.random.rand(50, 512) for i in range(100) }
+    check_delta_order(age2feats=age2feats)
     

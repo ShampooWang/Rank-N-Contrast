@@ -5,49 +5,43 @@ import logging
 import torch
 import time
 from model import Encoder, model_dict
-from dataset import *
 from utils import *
-from loss import PointwiseRankingLoss
-from collections import defaultdict
+# Data
+import pandas as pd
+from PIL import Image
+from torch.utils import data
+# Others
+import math
+from tqdm import tqdm
+from config.ordernamespace import OrderedNamespace
+import yaml
 
 print = logging.info
 
 
-def parse_option():
+def parse_regressor_option():
+    print("Parsing regressor's configurations")
+    
+    # General
     parser = argparse.ArgumentParser('argument for training')
-
-    parser.add_argument('--print_freq', type=int, default=10, help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=50, help='save frequency')
-
-    parser.add_argument('--batch_size', type=int, default=64, help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=100, help='number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=0.05, help='learning rate')
-    parser.add_argument('--lr_decay_rate', type=float, default=0.2, help='decay rate for learning rate')
-    parser.add_argument('--weight_decay', type=float, default=0, help='weight decay')
-    parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
+    parser.add_argument('--config', type=str, help='path to your .yaml configuration file')
     parser.add_argument('--trial', type=str, default='0', help='id for recording multiple runs')
-
-    parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
-    parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
-    parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
-    parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
     parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
-    parser.add_argument('--no_bias', action='store_true', help='Bias of linear regressor')
-
-    # Others
     parser.add_argument('--seed', type=int, default=322)
-    parser.add_argument('--ordinal_pretraining', type=bool, default=False)
-    parser.add_argument('--orthog_basis', type=bool, default=False)
     parser.add_argument('--save_folder', type=str, default=None)
 
     opt = parser.parse_args()
 
-    opt.model_name = 'Regressor_{}_ep_{}_lr_{}_d_{}_wd_{}_mmt_{}_bsz_{}_bias_{}_trial_{}'. \
-        format(opt.dataset, opt.epochs, opt.learning_rate, opt.lr_decay_rate,
-               opt.weight_decay, opt.momentum, opt.batch_size, not opt.no_bias, opt.trial)
-    
+    # Load yaml file
+    config = yaml.load(open(opt.config, "r"), Loader=yaml.FullLoader)
+    opt = OrderedNamespace([opt, config])
+
+    div_scale = getattr(opt.feature_extract, "div_scale", 1.0)
+    normalized_by_D = getattr(opt.feature_extract, "normalized_by_D", False)
+    opt.model_name = 'Regressor_{}_divScale_{}_normalied_D_{}_trial_{}'\
+    .format(opt.data.dataset, div_scale, normalized_by_D, opt.trial)    
+      
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-1][:-len('_last.pth')]
     
@@ -56,6 +50,13 @@ def parse_option():
     else:
         os.makedirs(opt.save_folder, exist_ok=True)
 
+    
+    print(f"Model name: {opt.model_name}")
+    print(f"Options: {opt}")
+
+    return opt
+
+def set_logging(opt):
     logging.root.handlers = []
     logging.basicConfig(
         level=logging.INFO,
@@ -66,13 +67,14 @@ def parse_option():
         ]
     )
 
-    print(f"Model name: {opt.model_name}")
-    print(f"Options: {opt}")
-
-    return opt
-
 class AgeDB(data.Dataset):
-    def __init__(self, opt, data_folder, transform=None, split='train', feature_dim=512):
+    def __init__(self, opt, data_folder, transform=None, split='train', noise_scale=0.0, feature_dim=512, **kargs):
+        if split == "train" and noise_scale > 0:
+            print(f"Adding gausain noise with scale {noise_scale} to the label.")
+            df = pd.read_csv(f'./data/agedb_noise_scale_{noise_scale}.csv')
+        else:
+            df = pd.read_csv(f'./data/agedb.csv')
+    
         df = pd.read_csv(f'./data/agedb.csv')
         self.df = df[df['split'] == split]
         self.split = split
@@ -107,42 +109,86 @@ class AgeDB(data.Dataset):
         
         return returned_items
     
+class AgeDBFeatureLabel_pairs(data.Dataset):
+    def __init__(self, features, labels) -> None:
+        if isinstance(features, list):
+            self.features = torch.cat(features, dim=0)
+        else:
+            self.features = features
 
-def set_loader(opt):
-    train_transform = get_transforms(split='train', aug=opt.aug)
-    val_transform = get_transforms(split='val', aug=opt.aug)
-    print(f"Train Transforms: {train_transform}")
-    print(f"Val Transforms: {val_transform}")
+        if isinstance(features, list):
+            self.labels = torch.cat(labels, dim=0)
+        else:
+            self.labels = labels
+    
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, index):
+        return self.features[index], self.labels[index]
 
-    train_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, transform=train_transform, split='train')
-    val_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, transform=val_transform, split='val')
-    test_dataset = globals()[opt.dataset](opt, data_folder=opt.data_folder, transform=val_transform, split='test')
 
-    print(f'Train set size: {train_dataset.__len__()}\t'
-          f'Val set size: {val_dataset.__len__()}\t'
-          f'Test set size: {test_dataset.__len__()}')
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.num_workers, pin_memory=True
+def get_encoder_features(opt, dataset, model):
+    config = opt.Regressor.trainer
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers, pin_memory=False
     )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=opt.batch_size, shuffle=False, num_workers=opt.num_workers, pin_memory=True
+    div_scale = getattr(opt.feature_extract, "div_scale", 1.0)
+    print(f"Start extracting frozen features. Divide feature by the scale: {div_scale}")
+    normalized_by_D = getattr(opt.feature_extract, "normalized_by_D", False)
+    if normalized_by_D: 
+        print(f"Normalize features by sqrt(D)")
+        
+    model.eval()
+    Z = []
+    y = []
+    with torch.no_grad():
+        for returned_items in tqdm(loader):
+            images = returned_items["img"].cuda(non_blocking=True)
+            features = model(images) / div_scale
+            if normalized_by_D:
+                features = features / math.sqrt(features.shape[1])
+            Z.append(features.cpu())
+            y.append(returned_items["label"])
+    del loader
+    return AgeDBFeatureLabel_pairs(Z, y)
+
+
+def set_loader(opt, model):
+    train_transform = get_transforms(split='train', aug=opt.data.aug)
+    val_transform = get_transforms(split='val', aug=opt.data.aug)
+    train_dataset = globals()[opt.data.dataset](opt, transform=train_transform, split='train', **opt.data)
+    val_dataset = globals()[opt.data.dataset](opt, transform=val_transform, split='val', **opt.data)
+    test_dataset = globals()[opt.data.dataset](opt, transform=val_transform, split='test', **opt.data)
+
+    if opt.Regressor.trainer.verbose:
+        print(f"Train Transforms: {train_transform}")
+        print(f"Val Transforms: {val_transform}")
+        print(f'Train set size: {train_dataset.__len__()}\t'
+            f'Val set size: {val_dataset.__len__()}\t'
+            f'Test set size: {test_dataset.__len__()}')
+
+    trainFeatureLabel_loader = torch.utils.data.DataLoader(
+        get_encoder_features(opt, train_dataset, model), batch_size=opt.Regressor.trainer.batch_size, shuffle=True, num_workers=opt.Regressor.trainer.num_workers, pin_memory=True
     )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=opt.batch_size, shuffle=False, num_workers=opt.num_workers, pin_memory=True
+    valFeatureLabel_loader = torch.utils.data.DataLoader(
+        get_encoder_features(opt, val_dataset, model), batch_size=opt.Regressor.trainer.batch_size, shuffle=False, num_workers=opt.Regressor.trainer.num_workers, pin_memory=True
+    )
+    testFeatureLabel_loader = torch.utils.data.DataLoader(
+        get_encoder_features(opt, test_dataset, model), batch_size=opt.Regressor.trainer.batch_size, shuffle=False, num_workers=opt.Regressor.trainer.num_workers, pin_memory=True
     )
 
-    return train_loader, val_loader, test_loader
+    return trainFeatureLabel_loader, valFeatureLabel_loader, testFeatureLabel_loader
 
 
 def set_model(opt):
-    model = Encoder(name=opt.model)
+    model = Encoder(name=opt.Encoder.type)
     criterion = torch.nn.L1Loss()
     # criterion = torch.nn.MSELoss()
 
-    dim_in = model_dict[opt.model][1]
-    dim_out = get_label_dim(opt.dataset)
-    regressor = torch.nn.Linear(dim_in, dim_out, bias=not opt.no_bias)
+    dim_in = model_dict[opt.Encoder.type][1]
+    dim_out = get_label_dim(opt.data.dataset)
+    regressor = torch.nn.Linear(dim_in, dim_out, bias=getattr(opt.Regressor, "bias", True))
     ckpt = torch.load(opt.ckpt, map_location='cpu')
     state_dict = ckpt['model']
 
@@ -155,17 +201,6 @@ def set_model(opt):
             new_state_dict[k] = v
         state_dict = new_state_dict
 
-    # Loading parameters for ordinal-type pretraining
-    if 'criterion' in ckpt:
-        if opt.ordinal_pretraining:
-            pretrain_criterion  = PointwiseRankingLoss(objective="ordinal")
-        else:
-            pretrain_criterion = PointwiseRankingLoss()
-        pretrain_criterion.load_state_dict(ckpt['criterion'])
-        pretrain_criterion.cuda()
-    else:
-        pretrain_criterion = None
-
     model = model.cuda()
     regressor = regressor.cuda()
     criterion = criterion.cuda()
@@ -174,11 +209,10 @@ def set_model(opt):
     model.load_state_dict(state_dict)
     print(f"<=== Epoch [{ckpt['epoch']}] checkpoint Loaded from {opt.ckpt}!")
 
-    return model, regressor, criterion, pretrain_criterion
+    return model, regressor, criterion
 
 
-def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pretrain_criterion=None):
-    model.eval()
+def train_epoch(loader, regressor, criterion, optimizer, epoch, opt):
     regressor.train()
 
     batch_time = AverageMeter()
@@ -186,30 +220,14 @@ def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pret
     losses = AverageMeter()
 
     end = time.time()
-    for idx, returned_items in enumerate(train_loader):
+    for idx, (features, labels) in enumerate(loader):
         data_time.update(time.time() - end)
-        images = returned_items["img"].cuda(non_blocking=True)
-        labels = returned_items["label"].cuda(non_blocking=True)
-        bsz = labels.shape[0]
-
         with torch.no_grad():
-            features = model(images)
-            # features_norm = features.norm(dim=-1, p=2)
-            if opt.orthog_basis:
-                feature_basis = returned_items["feature_basis"].cuda(non_blocking=True)
-                features = features.norm(dim=-1, p=2).unsqueeze(1) * feature_basis
-            elif pretrain_criterion is not None and hasattr(pretrain_criterion, "anchor"):
-                scores = torch.matmul(features.double(), pretrain_criterion.anchor.unsqueeze(1)) # size [2B, 1]
-                features = features * scores / features.norm(dim=-1, p=2).unsqueeze(1)
-
+            features = features.cuda(non_blocking=True)
+            labels = labels.cuda(non_blocking=True)
+        bsz = labels.shape[0]
         output = regressor(features.detach())
         loss = criterion(output, labels)
-        if loss.isnan():
-            print(features)
-            # print(features_norm)
-            print(output)
-            print(labels)
-            exit(0)
         losses.update(loss.item(), bsz)
 
         optimizer.zero_grad()
@@ -219,37 +237,31 @@ def train(train_loader, model, regressor, criterion, optimizer, epoch, opt, pret
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if (idx + 1) % opt.print_freq == 0:
-            print('Train: [{0}][{1}/{2}]\t'
-                  'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
-                epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                data_time=data_time, loss=losses))
-            sys.stdout.flush()
+        # if (idx + 1) % opt.Regressor.trainer.print_freq == 0:
+        #     print('Train: [{0}][{1}/{2}]\t'
+        #           'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+        #           'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
+        #           'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
+        #         epoch, idx + 1, len(loader), batch_time=batch_time,
+        #         data_time=data_time, loss=losses))
+        #     sys.stdout.flush()
+
+    if opt.Regressor.trainer.verbose:
+        print('Epoch [{0}], average loss: {1.avg:.3f}'.format(epoch, losses))
+    sys.stdout.flush()
 
 
-def validate(val_loader, model, regressor, opt, pretrain_criterion=None):
-    model.eval()
+def validate(loader, regressor):
     regressor.eval()
 
     losses = AverageMeter()
     criterion_l1 = torch.nn.L1Loss()
 
     with torch.no_grad():
-        for idx, returned_items in enumerate(val_loader):
-            images = returned_items["img"].cuda(non_blocking=True)
-            labels = returned_items["label"].cuda(non_blocking=True)
+        for features, labels in loader:
+            features = features.cuda(non_blocking=True)
+            labels = labels.cuda(non_blocking=True)
             bsz = labels.shape[0]
-            features = model(images)
-
-            if opt.orthog_basis:
-                feature_basis = returned_items["feature_basis"].cuda(non_blocking=True)
-                features = features.norm(dim=-1, p=2).unsqueeze(1) * feature_basis
-            elif pretrain_criterion is not None and hasattr(pretrain_criterion, "anchor"):
-                scores = torch.matmul(features.double(), pretrain_criterion.anchor.unsqueeze(1)) # size [2B, 1]
-                features = features * scores / features.norm(dim=-1, p=2).unsqueeze(1)
-
             output = regressor(features)
             loss_l1 = criterion_l1(output, labels)
             losses.update(loss_l1.item(), bsz)
@@ -257,18 +269,16 @@ def validate(val_loader, model, regressor, opt, pretrain_criterion=None):
     return losses.avg
 
 
-def main():
-    opt = parse_option()
-    set_seed(322)
-
-    # build data loader
-    train_loader, val_loader, test_loader = set_loader(opt)
-
-    # build model and criterion
-    model, regressor, criterion, pretrain_criterion = set_model(opt)
+def train(
+        opt, 
+        criterion,
+        train_loader, 
+        val_loader, 
+        regressor
+    ):
 
     # build optimizer
-    optimizer = set_optimizer(opt, regressor)
+    optimizer = set_optimizer(opt.Regressor, regressor)
 
     save_file_best = os.path.join(opt.save_folder, f"{opt.model_name}_best.pth")
     save_file_last = os.path.join(opt.save_folder, f"{opt.model_name}_last.pth")
@@ -282,19 +292,25 @@ def main():
         best_error = ckpt_state['best_error']
         print(f"<=== Epoch [{ckpt_state['epoch']}] Resumed from {opt.resume}!")
 
-    # training routine
-    for epoch in range(start_epoch, opt.epochs + 1):
-        adjust_learning_rate(opt, optimizer, epoch)
+
+    epoch_counter = range(start_epoch, opt.Regressor.trainer.epochs + 1)
+    if not opt.Regressor.trainer.verbose:
+        epoch_counter = tqdm(epoch_counter)
+
+    print("Start training regressor")
+    for epoch in epoch_counter:
+        adjust_learning_rate(opt.Regressor, optimizer, epoch)
 
         # train for one epoch
-        train(train_loader, model, regressor, criterion, optimizer, epoch, opt)
+        train_epoch(train_loader, regressor, criterion, optimizer, epoch, opt)
 
-        valid_error = validate(val_loader, model, regressor, opt)
-        print('Val L1 error: {:.3f}'.format(valid_error))
-
+        valid_error = validate(val_loader, regressor)
         is_best = valid_error < best_error
         best_error = min(valid_error, best_error)
-        print(f"Best Error: {best_error:.3f}")
+
+        if opt.Regressor.trainer.verbose:
+            print('Val L1 error: {:.3f}'.format(valid_error))
+            print(f"Best Error: {best_error:.3f}")
 
         if is_best:
             torch.save({
@@ -309,15 +325,41 @@ def main():
             'last_error': valid_error
         }, save_file_last)
 
+    return save_file_best
+
+
+def train_regressor(opt=None):
+    if opt is None:
+        opt = parse_regressor_option()
+
+    # Fixing random seed    
+    set_seed(opt.seed)
+
+    # build model and criterion
+    model, regressor, criterion = set_model(opt)
+
+    # build data loader
+    train_loader, val_loader, test_loader = set_loader(opt, model)
+
+    # training routine
+    save_file_best = train(
+        opt,
+        criterion,
+        train_loader,
+        val_loader,
+        regressor
+    )
+
     print("=" * 120)
     print("Test best model on test set...")
     checkpoint = torch.load(save_file_best)
     regressor.load_state_dict(checkpoint['state_dict'])
     print(f"Loaded best model, epoch {checkpoint['epoch']}, best val error {checkpoint['best_error']:.3f}")
-    test_loss = validate(test_loader, model, regressor, opt)
+    test_loss = validate(test_loader, regressor)
     to_print = 'Test L1 error: {:.3f}'.format(test_loss)
     print(to_print)
 
 
 if __name__ == '__main__':
-    main()
+    opt = parse_regressor_option()
+    train_regressor(opt)

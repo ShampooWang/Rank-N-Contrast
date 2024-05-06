@@ -20,7 +20,7 @@ def parse_option():
     parser.add_argument('--save_curr_freq', type=int, default=1, help='save curr last frequency')
 
     parser.add_argument('--batch_size', type=int, default=256, help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=16, help='num of workers to use')
+    parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=400, help='number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=0.5, help='learning rate')
     parser.add_argument('--lr_decay_rate', type=float, default=0.1, help='decay rate for learning rate')
@@ -30,6 +30,7 @@ def parse_option():
 
     parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
+    parser.add_argument('--noise_scale', type=float, default=0.0, help="The scale of the label noise")
     parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
@@ -41,10 +42,9 @@ def parse_option():
 
     opt = parser.parse_args()
 
-    opt.model_path = './save/{}_models'.format(opt.dataset)
-    opt.model_name = 'RnC_{}_{}_ep_{}_lr_{}_d_{}_wd_{}_mmt_{}_bsz_{}_aug_{}_temp_{}_label_{}_feature_{}_trial_{}'. \
-        format(opt.dataset, opt.model, opt.epochs, opt.learning_rate, opt.lr_decay_rate, opt.weight_decay, opt.momentum,
-               opt.batch_size, opt.aug, opt.temp, opt.label_diff, opt.feature_sim, opt.trial)
+    opt.model_path = f'./checkpoints/RnC'
+    opt.model_name = '{}_{}_ep_{}_noise_scale_{}_trial_{}'. \
+        format(opt.dataset, opt.model, opt.epochs, opt.noise_scale, opt.trial)
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-2]
 
@@ -76,7 +76,8 @@ def set_loader(opt):
     train_dataset = globals()[opt.dataset](
         data_folder=opt.data_folder,
         transform=TwoCropTransform(train_transform),
-        split='train'
+        split='train',
+        noise_scale=opt.noise_scale
     )
     print(f'Train set size: {train_dataset.__len__()}')
 

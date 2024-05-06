@@ -77,9 +77,9 @@ class AverageMeter(object):
 
 
 def adjust_learning_rate(args, optimizer, epoch):
-    lr = args.learning_rate
-    eta_min = lr * (args.lr_decay_rate ** 3)
-    lr = eta_min + (lr - eta_min) * (1 + math.cos(math.pi * epoch / args.epochs)) / 2
+    lr = args.optimizer.learning_rate
+    eta_min = lr * (args.optimizer.lr_decay_rate ** 3)
+    lr = eta_min + (lr - eta_min) * (1 + math.cos(math.pi * epoch / args.trainer.epochs)) / 2
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -97,8 +97,8 @@ def save_model(model, optimizer, opt, epoch, save_file):
 
 
 def set_optimizer(opt, model):
-    optimizer = torch.optim.SGD(model.parameters(), lr=opt.learning_rate,
-                                momentum=opt.momentum, weight_decay=opt.weight_decay)
+    optimizer = torch.optim.SGD(model.parameters(), lr=opt.optimizer.learning_rate,
+                                momentum=opt.optimizer.momentum, weight_decay=opt.optimizer.weight_decay)
 
     return optimizer
 

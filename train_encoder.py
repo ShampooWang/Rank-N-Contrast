@@ -4,63 +4,59 @@ import sys
 import logging
 import torch
 import time
-# import wandb
-
 from dataset import *
 from utils import *
 from model import Encoder
-from loss import PointwiseRankingLoss, PairwiseRankingLoss, DeltaOrderLoss
+from loss import PointwiseRankingLoss, PairwiseRankingLoss, DeltaOrderLoss, RnCLoss
+import yaml
+from config.ordernamespace import OrderedNamespace
+from main_linear import parse_regressor_option, train_regressor, set_logging
 
 print = logging.info
 
 
-def parse_option():
+def parse_encoder_option():
+    print("Parsing encoder's configurations")
+
+    # General
     parser = argparse.ArgumentParser('argument for training')
-
-    parser.add_argument('--print_freq', type=int, default=10, help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=50, help='save frequency')
-    parser.add_argument('--save_curr_freq', type=int, default=1, help='save curr last frequency')
-
-    parser.add_argument('--batch_size', type=int, default=256, help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=400, help='number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=0.5, help='learning rate')
-    parser.add_argument('--lr_decay_rate', type=float, default=0.1, help='decay rate for learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
-    parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
+    parser.add_argument('--config', type=str, help='path to your .yaml configuration file')
     parser.add_argument('--trial', type=str, default='0', help='id for recording multiple runs')
-
-    parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
-    parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
-    parser.add_argument('--noise_scale', type=float, default=0.0, help="The scale of the label noise")
-    parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
-    parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
-
-    parser.add_argument('--wandb', type=bool, default=True, help='Using wandb to recored the experiments')
-
-    # Loss Parameters
-    parser.add_argument('--loss_type', type=str, default="pointwise")
-    parser.add_argument('--temp', type=float, default=2, help='temperature')
-    parser.add_argument('--feature_norm', type=str, default='l2', choices=['l1', 'l2'], help='Norm of the features')
-    parser.add_argument('--objective', type=str, default='l1', choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal'], help='Objective funtion of pointwise ranking')
-
-    # Delta order loss
-    parser.add_argument('--delta', type=float, default=0.2)
+    parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
+    parser.add_argument('--seed', type=int, default=322)
+    parser.add_argument('--save_folder', type=str, default=None)
 
     opt = parser.parse_args()
 
-    opt.model_path = f'./checkpoints/{opt.loss_type}'
-    if "deltaorder" in opt.loss_type:
-        opt.model_name = '{}_{}_ep_{}_norm_{}_delta_{}_trial_{}'. \
-            format(opt.dataset, opt.model, opt.epochs, opt.feature_norm, opt.delta, opt.trial)
+    # Load yaml file
+    config = yaml.load(open(opt.config, "r"), Loader=yaml.FullLoader)
+    opt = OrderedNamespace([opt, config])
+
+    # Create model name
+    loss_type = opt.Encoder.loss.loss_type 
+    if "deltaorder" in loss_type:
+        opt.model_name = '{}_{}_ep_{}_delta_{}'. \
+            format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs, opt.Encoder.loss.delta)
+    elif loss_type == "RnC":
+        opt.model_name = '{}_{}_ep_{}'. \
+            format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs)
+    elif loss_type in ["pointwise", "pairwsie"]:
+        opt.model_name = '{}_{}_ep_{}_norm_{}_obj_{}'. \
+            format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs, opt.Encoder.loss.feature_norm, opt.Encoder.loss.objective)      
     else:
-        opt.model_name = '{}_{}_ep_{}_norm_{}_obj_{}_trial_{}'. \
-            format(opt.dataset, opt.model, opt.epochs, opt.feature_norm, opt.objective, opt.trial)
+        raise NotImplementedError(loss_type)
+
+    if opt.data.noise_scale > 0.0:
+        opt.model_name += f"_noise_scale_{opt.data.noise_scale}"
+
+    opt.model_name += f"_trial_{opt.trial}"
         
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-2]
 
+    # Create folders
+    opt.model_path = f'./checkpoints/{loss_type}'
     opt.save_folder = os.path.join(opt.model_path, opt.model_name)
     if not os.path.isdir(opt.save_folder):
         os.makedirs(opt.save_folder)
@@ -83,32 +79,36 @@ def parse_option():
 
 
 def set_loader(opt):
-    train_transform = get_transforms(split='train', aug=opt.aug)
+    config = opt.data
+    train_transform = get_transforms(split='train', aug=config.aug)
     print(f"Train Transforms: {train_transform}")
 
-    train_dataset = globals()[opt.dataset](
-        data_folder=opt.data_folder,
+    train_dataset = globals()[config.dataset](
+        data_folder=config.data_folder,
         transform=TwoCropTransform(train_transform),
         split='train',
-        noise_scale=opt.noise_scale,
+        noise_scale=config.noise_scale,
     )
     print(f'Train set size: {train_dataset.__len__()}')
 
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=True,
-        num_workers=opt.num_workers, pin_memory=True, drop_last=True)
+        train_dataset, batch_size=opt.Encoder.trainer.batch_size, shuffle=True,
+        num_workers=opt.Encoder.trainer.num_workers, pin_memory=True, drop_last=True)
 
     return train_loader
 
 
 def set_model(opt):
-    model = Encoder(name=opt.model)
-    if opt.loss_type == "pointwise":
-        criterion = PointwiseRankingLoss(feature_norm=opt.feature_norm, objective=opt.objective)
-    elif opt.loss_type == "pairwise":
-        criterion = PairwiseRankingLoss(feature_sim=opt.feature_norm, objective=opt.objective)
+    model = Encoder(name=opt.Encoder.type)
+    config = opt.Encoder.loss
+    if config.loss_type == "RnC":
+        criterion = RnCLoss(delta=getattr(config, "delta", 0.0))
+    elif config.loss_type == "pointwise":
+        criterion = PointwiseRankingLoss(feature_norm=config.feature_norm, objective=config.objective)
+    elif config.loss_type == "pairwise":
+        criterion = PairwiseRankingLoss(feature_sim=config.feature_norm, objective=config.objective)
     else:
-        criterion = DeltaOrderLoss(delta=opt.delta)
+        criterion = DeltaOrderLoss(delta=config.delta)
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:
@@ -120,9 +120,10 @@ def set_model(opt):
     return model, criterion
 
 def set_optimizer(opt, model, criterion):
+    config = opt.Encoder.optimizer
     parameters = list(model.parameters()) + list(criterion.parameters())
-    optimizer = torch.optim.SGD(parameters, lr=opt.learning_rate,
-                                momentum=opt.momentum, weight_decay=opt.weight_decay)
+    optimizer = torch.optim.SGD(parameters, lr=config.learning_rate,
+                                momentum=config.momentum, weight_decay=config.weight_decay)
 
     return optimizer
 
@@ -171,7 +172,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if (idx + 1) % opt.print_freq == 0:
+        if (idx + 1) % opt.Encoder.trainer.print_freq == 0:
             to_print = 'Train: [{0}][{1}/{2}]\t' \
                        'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t' \
                        'DT {data_time.val:.3f} ({data_time.avg:.3f})\t' \
@@ -188,8 +189,11 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     if hasattr(criterion, "bias"):
         print(f"Learnable bias: {criterion.bias.exp().item()}")
 
-def main():
-    opt = parse_option()
+def train_encoder():
+    opt = parse_encoder_option()
+    regressor_opt = parse_regressor_option()
+    regressor_opt.save_folder = opt.save_folder
+    set_logging(regressor_opt)
 
     # build data loader
     train_loader = set_loader(opt)
@@ -209,24 +213,32 @@ def main():
         print(f"<=== Epoch [{ckpt_state['epoch']}] Resumed from {opt.resume}!")
 
     # training routine
-    for epoch in range(start_epoch, opt.epochs + 1):
-        adjust_learning_rate(opt, optimizer, epoch)
+    for epoch in range(start_epoch, opt.Encoder.trainer.epochs + 1):
+        adjust_learning_rate(opt.Encoder, optimizer, epoch)
 
         train(train_loader, model, criterion, optimizer, epoch, opt)
 
-        if epoch % opt.save_freq == 0:
+        if epoch % opt.Encoder.trainer.save_freq == 0:
             save_file = os.path.join(
                 opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
             save_model(model, optimizer, opt, epoch, save_file, criterion)
 
-        if epoch % opt.save_curr_freq == 0:
+        if epoch % opt.Encoder.trainer.save_curr_freq == 0:
             save_file = os.path.join(opt.save_folder, 'curr_last.pth')
             save_model(model, optimizer, opt, epoch, save_file, criterion)
 
+        if epoch > 0 and epoch % opt.Encoder.trainer.test_regression_freq == 0:
+            regressor_opt.ckpt = save_file
+            train_regressor(regressor_opt)
+
     # save the last model
     save_file = os.path.join(opt.save_folder, 'last.pth')
-    save_model(model, optimizer, opt, opt.epochs, save_file, criterion)
+    save_model(model, optimizer, opt, opt.Encoder.trainer.epochs, save_file, criterion)
+
+    # Train the linear regressor
+    regressor_opt.ckpt = save_file
+    train_regressor(regressor_opt)
 
 
 if __name__ == '__main__':
-    main()
+    train_encoder()

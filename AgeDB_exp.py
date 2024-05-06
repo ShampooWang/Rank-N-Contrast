@@ -12,7 +12,7 @@ from scipy.spatial.distance import pdist, squareform
 from tqdm import tqdm
 
 from model import Encoder, model_dict, SupResNet
-from main_linear import set_loader
+from main_linear_old import set_loader
 from utils import *
 from exp_utils import *
 from loss import PointwiseRankingLoss
@@ -34,6 +34,7 @@ def parse_option():
 
     parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
+    parser.add_argument('--noise_scale', type=float, default=0.0, help="The scale of the label noise")
     parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
@@ -239,7 +240,7 @@ def main():
     # )
 
     # Check delta-order
-    check_delta_order(age2feats, delta=0.5)
+    check_delta_order(age2feats)
 
 
 if __name__ == "__main__":
