@@ -188,7 +188,18 @@ def check_delta_order(age2feats: dict):
         result += _violation_percent.mean(0) * 100 / (N-1) # result[delta] += _violation_percent.mean(0) * 100 / (N-1)
 
     print(result)
+
+def compute_knn(Z, y, k: int=5):
+    from sklearn.neighbors import NearestNeighbors
+    nbrs = NearestNeighbors(n_neighbors=k, algorithm='brute', metric='l2').fit(Z)
+    distances, indices = nbrs.kneighbors(Z)
+    nbrs_y = y[indices[:, 1:]] # [N, k]
+    avg_nbrs_y_diffs = np.abs(y[:, None] - nbrs_y).mean()
     
+    # print(f"{k} nearest neighbors label differences: {avg_nbrs_y_diffs:.3f}")
+
+    return avg_nbrs_y_diffs
+
 if __name__ == "__main__":
     from utils import set_seed
     set_seed(322)

@@ -44,7 +44,7 @@ class RnCLoss(nn.Module):
         if self.delta > 0.0:
             print(f"Adding constraint {self.delta} to the negatives")
 
-    def forward(self, features, labels):
+    def forward(self, features, labels, ranks):
         # features: [bs, 2, feat_dim]
         # labels: [bs, label_dim]
 
@@ -73,7 +73,7 @@ class RnCLoss(nn.Module):
                 margins = (ranks[:, None, :] - ranks[:, :, None]).abs() * self.delta # [n, n-1, n-1]
                 del ranks
             logits += logits_max.detach()
-            exp_logits = (logits[:, None, :] - margins).exp()
+            # exp_logits = (logits[:, None, :] - margins).exp()
 
         loss = 0.
         for k in range(n - 1):
@@ -81,7 +81,7 @@ class RnCLoss(nn.Module):
             pos_label_diffs = label_diffs[:, k]  # 2bs
             neg_mask = (label_diffs >= pos_label_diffs.view(-1, 1)).float()  # [2bs, 2bs - 1]
             if self.delta > 0.0:
-                neg_logits = torch.log((neg_mask * exp_logits[:, k, :]).sum(dim=-1))  # 2bs
+                neg_logits = torch.log((neg_mask * (logits + margins[:, k, :]).exp()).sum(dim=-1))  # 2bs
             else:
                 neg_logits = torch.log((neg_mask * exp_logits).sum(dim=-1))  # 2bs
             pos_log_probs = pos_logits - neg_logits  # 2bs
@@ -141,7 +141,7 @@ class PointwiseRankingLoss(nn.Module):
 
         return loss.sum(1).mean(0)
 
-    def forward(self, features, labels):
+    def forward(self, features, labels, ranks):
         # features: [bs, 2, feat_dim]
         # labels: [bs, label_dim]
         features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
@@ -160,11 +160,9 @@ class PointwiseRankingLoss(nn.Module):
     
 
 class PairwiseRankingLoss(nn.Module):
-    def __init__(self, temperature=2, label_diff='l1', feature_sim='l2', objective="l2"):
+    def __init__(self, delta=0.3, objective="l2"):
         super(PairwiseRankingLoss, self).__init__()
-        self.t = temperature
-        self.label_diff_fn = LabelDifference(label_diff)
-        self.feature_sim_fn = FeatureSimilarity(feature_sim)
+        self.delta = delta
         self.objective = objective
 
         if self.objective == "l1":
@@ -174,33 +172,42 @@ class PairwiseRankingLoss(nn.Module):
         elif self.objective == "correlation":
             self.obj_func = CorrelationLoss()
 
-    def forward(self, features, labels):
-        # features: [bs, 2, feat_dim]
-        # labels: [bs, label_dim]
+    def forward(self, features: torch.Tensor, labels: torch.Tensor, ranks: torch.Tensor):
+        """Compute the pairwiseranking loss
+
+        Args:
+            features (torch.Tensor): input features to compute the loss, size: [bs, 2, feat_dim]
+            labels (torch.LongTensor): corresponding labels, size: [bs, label_dim]
+            ranks (torch.LongTensor): corresponding labels' ranks, size: [bs, label_dim]
+        Returns:
+            torch.Tensor: the computed loss, size: [1]
+        """
         
-        features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
-        labels = labels.repeat(2, 1)  # [2bs, label_dim]
+        if features.ndim == 3:
+            features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+            ranks = ranks.repeat(2, 1)  # [2bs, label_dim]
+
+        z_dists = (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)   
+        rank_diffs = ranks - ranks.transpose(1,0)
         N = features.shape[0]
         device = features.device
-
-        label_diffs = self.label_diff_fn(labels)
-        logits = -1 * self.feature_sim_fn(features).div(self.t)
         
         # remove the lower triangular part
         triu_mask = torch.ones((N,N), device=device).triu(diagonal=1).bool()
-        masked_logits = logits.masked_select(triu_mask)
-        masked_label_diffs = label_diffs.masked_select(triu_mask)
+        z_dists = z_dists.masked_select(triu_mask)
+        rank_diffs = rank_diffs.masked_select(triu_mask)
 
-        return self.obj_func(masked_logits, masked_label_diffs)
+        return self.obj_func(z_dists, self.delta * rank_diffs.abs())
     
 
 class DeltaOrderLoss(nn.Module):
     def __init__(self, delta: float = 0.1) -> None:
         super(DeltaOrderLoss, self).__init__()
-        assert 0 < delta < 1, f"The valid range of delta is (0,1), you assign delta as {delta}"
+        # assert 0 < delta < 1, f"The valid range of delta is (0,1), you assign delta as {delta}"
         self.delta = delta
+        self.criterion = nn.L1Loss()
 
-    def wo_anchor_forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+    def wo_anchor_forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """Compute the delta-order loss
 
         Args:
@@ -245,8 +252,7 @@ class DeltaOrderLoss(nn.Module):
 
         return loss
 
-
-    def forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
+    def w_anchor_forward(self, features: torch.Tensor, labels: torch.LongTensor) -> torch.Tensor:
         """Compute the delta-order loss
 
         Args:
@@ -311,12 +317,12 @@ class DeltaOrderLoss(nn.Module):
 if __name__ == "__main__":
     set_seed(322)
     features = torch.rand([256, 2, 512], dtype=float)
-    labels = torch.randint(1, 80, [256, 1])
-    loss = DeltaOrderLoss(delta=0.1).cuda()
+    labels = torch.randint(1, 80, [256, 1]).float()
+    # loss = OrderDistributionLoss(sigma=5.0).cuda()
     
     # times = []
     # for i in range(500):
     #     times.append(loss(features.cuda(), labels.cuda()))
     # print(sum(times) / len(times))
 
-    print(loss.forward(features.cuda(), labels.cuda()))
+    # print(loss.forward(features.cuda(), labels.cuda()))

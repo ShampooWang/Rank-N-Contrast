@@ -203,7 +203,7 @@ def main():
     if len(age2feats) > 0: 
         age2feats = dict(sorted(age2feats.items())) 
     Z = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
-    y = sum([[age] * age2feats[age].shape[0] for age in age2feats], [])
+    y = np.array(sum([[age] * age2feats[age].shape[0] for age in age2feats], []))
     print(f"Test loss: {test_loss.avg}")
 
     # Plot errors distribution
@@ -240,8 +240,11 @@ def main():
     # )
 
     # Check delta-order
-    check_delta_order(age2feats)
+    # check_delta_order(age2feats)
 
+    # Compute knn
+    avg_nbrs_y_diffs = compute_knn(Z, y)
+    print(f"5 nearest neighbors label differences: {avg_nbrs_y_diffs:.3f}")
 
 if __name__ == "__main__":
     main()

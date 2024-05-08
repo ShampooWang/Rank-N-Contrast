@@ -17,7 +17,7 @@ class AgeDB(data.Dataset):
         self.split = split
         self.data_folder = data_folder
         self.transform = transform
-
+        
     def __len__(self):
         return len(self.df)
 

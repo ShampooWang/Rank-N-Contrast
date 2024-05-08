@@ -6,6 +6,7 @@ import torch
 import time
 from model import Encoder, model_dict
 from utils import *
+from exp_utils import plot_2d_umap
 from loss import PointwiseRankingLoss
 import numpy as np
 import pandas as pd
@@ -97,7 +98,7 @@ class AgeDB(data.Dataset):
     def __getitem__(self, index):
         row = self.df.iloc[index]
         label = np.asarray([row['age']]).astype(np.float32)
-        feature = self.feature_basis[index] * (label * 10)
+        feature = self.feature_basis[index]
 
         return feature, label
 

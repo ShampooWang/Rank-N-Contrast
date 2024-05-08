@@ -24,11 +24,12 @@ Encoder:
     weight_decay: 0.0001
     momentum: 0.9
   loss:
-    loss_type: "RnC"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise"]
+    loss_type: "pairwise"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise", "OrderNormal"]
+    # sigma: 5.0
     delta: 0.5
     # temp: 2.0
     # feature_norm: l2  # choices=['l1', 'l2']
-    # objective: l1  # choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal']
+    objective: l2  # choices=['l1', 'l2', 'covariance', 'correlation', 'ordinal']
 
 Regressor:
   bias: True
