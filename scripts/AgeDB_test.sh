@@ -15,12 +15,15 @@ cd /tmp2/jeffwang/Rank-N-Contrast
 # ckpt="/tmp2/jeffwang/Rank-N-Contrast/checkpoints/L1/best.pth"
 # ckpt="/tmp2/jeffwang/Rank-N-Contrast/checkpoints/deltaorder/AgeDB_resnet18_ep_400_norm_l2_delta_0.1_trial_0/last.pth"
 # ckpt="/tmp2/jeffwang/Rank-N-Contrast/checkpoints/pairwise/PwR_AgeDB_resnet18_ep_400_norm_l2_obj_correlation_trial_0/last.pth"
-ckpt="/tmp2/jeffwang/Rank-N-Contrast/checkpoints/L1/best.pth"
+ckpt="/tmp2/jeffwang/Rank-N-Contrast/checkpoints/ProbRank/AgeDB_resnet18_ep_400_t_4_seed_3_trial_0/best_nbr_ydiff.pth"
 
 python AgeDB_exp.py \
     --ckpt ${ckpt} \
-    --sup_resnet
-    # --umap_pic_name "RnC/reproduce"
+    --add_regressor \
+    --regerssor_ckpt "/tmp2/jeffwang/Rank-N-Contrast/checkpoints/pairwise/AgeDB_resnet18_ep_400_delta_1.0_obj_l1_seed_2_trial_0/Regressor_AgeDB_ep_100_lr_0.05_d_0.2_wd_0_mmt_0.9_bsz_64_bias_True_trial_0_best.pth" 
+    # --sup_resnet
+    # --umap_pic_name "pairwise/delta03_seed322"
+    
     
     
     

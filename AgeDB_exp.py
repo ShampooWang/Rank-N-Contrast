@@ -2,6 +2,7 @@ import logging
 import argparse
 import sys
 import torch
+from torcheval.metrics import R2Score
 import numpy as np
 from numpy.linalg import matrix_rank
 import os
@@ -38,14 +39,14 @@ def parse_option():
     parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
-
+    parser.add_argument('--seed', type=int, default=322)
     parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
 
     # supervised resent
     parser.add_argument('--sup_resnet', action='store_true', help='whether to use supervised ResNet')
 
     # regressor
-    parser.add_argument('--add_regressor', type=bool, default=False, help='whether to add linear regressor module')
+    parser.add_argument('--add_regressor', action='store_true', help='whether to add linear regressor module')
     parser.add_argument('--regerssor_ckpt', type=str, default=None, help='path to the trained regressor')
 
     # others
@@ -67,7 +68,7 @@ def parse_option():
         level=logging.INFO,
         format="%(asctime)s | %(message)s",
         handlers=[
-            logging.FileHandler(os.path.join(opt.save_folder, f'{opt.model_name}.log')),
+            # logging.FileHandler(os.path.join(opt.save_folder, f'{opt.model_name}.log')),
             logging.StreamHandler()
         ]
     )
@@ -81,10 +82,14 @@ def testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=No
     model.eval()
     if regressor is not None:
         regressor.eval()
-    losses = AverageMeter()
+        
+    losses_mae = AverageMeter()
+    losses_se = AverageMeter()
     criterion_l1 = torch.nn.L1Loss()
+    criterion_l2 = torch.nn.MSELoss()
     age2feats = defaultdict(list)
     label_2_error = defaultdict(list)
+    r2metric = R2Score()
 
     with torch.no_grad():
         for idx, returned_items in enumerate(tqdm(test_loader)):
@@ -114,7 +119,10 @@ def testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=No
                         raise NotImplementedError(norm_type)
                 
             loss_l1 = criterion_l1(output, labels)
-            losses.update(loss_l1.item(), bsz)
+            loss_l2 = criterion_l2(output, labels)
+            losses_mae.update(loss_l1.item(), bsz)
+            losses_se.update(loss_l2.item(), bsz)
+            r2metric.update(output, labels)
 
             for lab, error in zip(labels, (output - labels).abs()):
                 label_2_error[lab.item()].append(error.item())
@@ -127,7 +135,7 @@ def testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=No
         for age in age2feats:
             age2feats[age] = torch.stack(age2feats[age], dim=0).cpu().numpy()
 
-    return losses, age2feats, label_2_error
+    return losses_mae, losses_se, age2feats, label_2_error, r2metric.compute()
 
 def set_model(opt):
     model = Encoder(name=opt.model)
@@ -181,6 +189,7 @@ def set_supResBet(opt):
 
 def main():
     opt = parse_option()
+    set_seed(opt.seed)
 
     # build data loader
     train_loader, val_loader, test_loader = set_loader(opt)
@@ -198,13 +207,14 @@ def main():
     # pretrain_criterion.load_state_dict(loss_params)
     # pretrain_criterion.cuda()
 
-    test_loss, age2feats, label_2_error = testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
+    test_mae_loss, test_se_loss, age2feats, label_2_error, test_r2_score = testing(test_loader, model, opt, model_opt, regressor, pretrain_criterion=None)   
     # Sort age2feats by the age
     if len(age2feats) > 0: 
         age2feats = dict(sorted(age2feats.items())) 
     Z = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
     y = np.array(sum([[age] * age2feats[age].shape[0] for age in age2feats], []))
-    print(f"Test loss: {test_loss.avg}")
+    print(f'Test L1 error: {test_mae_loss.avg:.3f}, Test RMSE error: {math.sqrt(test_se_loss.avg):.3f}, R2 score: {test_r2_score:.3f}')
+
 
     # Plot errors distribution
     # plot_error_distribution(

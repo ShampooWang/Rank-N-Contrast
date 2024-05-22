@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import umap
 import matplotlib.pyplot as plt
+import random
 
 class TwoCropTransform:
     def __init__(self, transform):
@@ -52,7 +53,7 @@ def get_transforms(split, aug):
 
 
 def get_label_dim(dataset):
-    if dataset in ['AgeDB']:
+    if dataset in ['AgeDB', 'IMDBWIKI']:
         label_dim = 1
     else:
         raise ValueError(dataset)
@@ -103,7 +104,15 @@ def set_optimizer(opt, model):
     return optimizer
 
 def set_seed(seed):
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)

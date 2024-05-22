@@ -1,0 +1,17 @@
+data:
+  data_folder: './datasets/imdb_wiki'
+  dataset: IMDBWIKI
+
+Encoder:
+  type: 'resnet50' # resnet50
+  trainer:
+    epochs: 90
+    batch_size: 128
+    num_workers: 4
+    print_freq: 10
+    save_freq: 20
+    save_curr_freq: 1
+  optimizer:
+    type: adam
+    learning_rate: 0.001
+    schedule: [60, 80]

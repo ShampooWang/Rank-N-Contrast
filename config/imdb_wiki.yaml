@@ -1,0 +1,50 @@
+data:
+  data_folder: './datasets/imdb_wiki'
+  dataset: IMDBWIKI
+  aug: 'crop,flip,color,grayscale'
+
+# feature_extract:
+  # div_scale: 3.0
+  # normalized_by_D: True
+
+Encoder:
+  type: 'resnet50' # resnet50
+  trainer:
+    epochs: 90
+    batch_size: 128
+    num_workers: 4
+    print_freq: 10
+    save_freq: 50
+    save_curr_freq: 1
+    test_regression_freq: 30
+  optimizer:
+    type: adam
+    learning_rate: 0.001
+    schedule: [60, 80]
+  loss:
+    loss_type: "RnC"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise", "ProbRank"]
+    # sigma: 5.0
+    # delta: 2.0
+    # t: 4.0
+    # eps: 0.01
+    # feat_pen: 0.01
+    # temp: 2.0
+    # feature_norm: l2  # choices=['l1', 'l2']
+    # objective: correlation  # choices=['l1', 'l2', 'huber', 'covariance', 'correlation', 'ordinal']
+
+Regressor:
+  bias: True
+  trainer: 
+    verbose: False
+    epochs: 30
+    batch_size: 64
+    num_workers: 4
+    print_freq: 10
+    save_freq: 50
+  optimizer:
+    type: adam
+    learning_rate: 0.0001
+
+# Others:
+  # ckpt_root: "/tmp2/jeffwang/Rank-N-Contrast/checkpoints"
+

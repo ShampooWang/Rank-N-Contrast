@@ -5,7 +5,7 @@ import logging
 import torch
 import time
 from model import SupResNet
-from dataset import *
+import datasets
 from utils import *
 
 print = logging.info
@@ -27,18 +27,23 @@ def parse_option():
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
     parser.add_argument('--trial', type=str, default='0', help='id for recording multiple runs')
 
-    parser.add_argument('--data_folder', type=str, default='./data', help='path to custom dataset')
+    parser.add_argument('--data_folder', type=str, default='./datasets/AgeDB', help='path to custom dataset')
     parser.add_argument('--dataset', type=str, default='AgeDB', choices=['AgeDB'], help='dataset')
     parser.add_argument('--noise_scale', type=float, default=0.0, help="The scale of the label noise")
     parser.add_argument('--model', type=str, default='resnet18', choices=['resnet18', 'resnet50'])
     parser.add_argument('--resume', type=str, default='', help='resume ckpt path')
     parser.add_argument('--aug', type=str, default='crop,flip,color,grayscale', help='augmentations')
+    parser.add_argument('--two_view', action="store_true")
+    parser.add_argument('--seed', type=int, default=322)
 
     opt = parser.parse_args()
 
     opt.model_path = './checkpoints/L1'
-    opt.model_name = '{}_{}_ep_{}_noise_scale_{}_trial_{}'. \
-        format(opt.dataset, opt.model, opt.epochs, opt.noise_scale, opt.trial)
+    opt.model_name = f'{opt.dataset}_{opt.model}_ep_{opt.epochs}'
+    if opt.noise_scale > 0.0:
+        opt.model_name += f"_noise_scale_{opt.data.noise_scale}"
+    opt.model_name += f"_seed_{opt.seed}"
+    opt.model_name += f"_trial_{opt.trial}"
     if len(opt.resume):
         opt.model_name = opt.resume.split('/')[-2]
 
@@ -63,15 +68,31 @@ def parse_option():
     return opt
 
 
-def set_loader(opt):
-    train_transform = get_transforms(split='train', aug=opt.aug)
-    val_transform = get_transforms(split='val', aug=opt.aug)
-    print(f"Train Transforms: {train_transform}")
-    print(f"Val Transforms: {val_transform}")
+def set_optimizer(opt, model):
+    optimizer = torch.optim.SGD(model.parameters(), lr=opt.learning_rate,
+                                momentum=opt.momentum, weight_decay=opt.weight_decay)
 
-    train_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=train_transform, split='train', noise_scale=opt.noise_scale)
-    val_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=val_transform, split='val')
-    test_dataset = globals()[opt.dataset](data_folder=opt.data_folder, transform=val_transform, split='test')
+    return optimizer
+
+
+def adjust_learning_rate(args, optimizer, epoch):
+    lr = args.learning_rate
+    eta_min = lr * (args.lr_decay_rate ** 3)
+    lr = eta_min + (lr - eta_min) * (1 + math.cos(math.pi * epoch / args.epochs)) / 2
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
+def set_loader(opt):
+    # train_transform = get_transforms(split='train', aug=opt.aug)
+    # val_transform = get_transforms(split='val', aug=opt.aug)
+    # print(f"Train Transforms: {train_transform}")
+    # print(f"Val Transforms: {val_transform}")
+
+    dataset = datasets.__dict__[opt.dataset]
+    train_dataset = dataset(data_folder=opt.data_folder, aug=opt.aug, split='train', two_crop_transform=opt.two_view)
+    val_dataset = dataset(data_folder=opt.data_folder, aug=opt.aug, split='val')
+    test_dataset = dataset(data_folder=opt.data_folder, aug=opt.aug, split='test')
 
     print(f'Train set size: {train_dataset.__len__()}\t'
           f'Val set size: {val_dataset.__len__()}\t'
@@ -112,16 +133,20 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     losses = AverageMeter()
 
     end = time.time()
-    for idx, (images, labels) in enumerate(train_loader):
+    for idx, data_dict in enumerate(train_loader):
+        images, labels = data_dict["img"], data_dict["label"]
         data_time.update(time.time() - end)
-        bsz = labels.shape[0]
+        labels = labels.cuda(non_blocking=True)
+        if isinstance(images, list):
+            # Two crop transform
+            images = torch.cat([images[0], images[1]], dim=0)
+            labels = labels.repeat(2, 1)
 
         if torch.cuda.is_available():
             images = images.cuda(non_blocking=True)
-            labels = labels.cuda(non_blocking=True)
 
+        bsz = labels.shape[0]
         output = model(images)
-
         loss = criterion(output, labels)
         losses.update(loss.item(), bsz)
 
@@ -151,7 +176,8 @@ def validate(val_loader, model):
     criterion_l1 = torch.nn.L1Loss()
 
     with torch.no_grad():
-        for idx, (images, labels) in enumerate(val_loader):
+        for idx, data_dict in enumerate(val_loader):
+            images, labels = data_dict["img"], data_dict["label"]
             images = images.cuda()
             labels = labels.cuda()
             bsz = labels.shape[0]
@@ -166,6 +192,8 @@ def validate(val_loader, model):
 
 def main():
     opt = parse_option()
+    # Fix random seed
+    set_seed(opt.seed)
 
     # build data loader
     train_loader, val_loader, test_loader = set_loader(opt)
