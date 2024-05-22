@@ -78,6 +78,12 @@ class TrainRegressor(BaseTask):
                 new_state_dict[k] = v
             state_dict = new_state_dict
 
+        if self.opt.fix_model_and_aug:
+            model_path = f"./checkpoints/seed322/{self.opt.Encoder.type}_regressor.pth"
+            model_params = torch.load(model_path)["model"]
+            regressor.load_state_dict(model_params)
+            print(f"Fixing regressor's initialization. Model checkpoint Loaded from {model_path}!")
+
         self.model = regressor.cuda()
         self.criterion  = torch.nn.L1Loss().cuda()
         self.encoder = encoder.cuda()
@@ -111,9 +117,27 @@ class TrainRegressor(BaseTask):
         return FeatureLabel_pairs(Z, y)
 
     def set_loader(self):
+        dataset = datasets.__dict__[self.opt.data.dataset]
+        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=False, use_fix_aug=self.opt.fix_model_and_aug)
+        val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
+        test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
+
+        if self.opt.Regressor.trainer.verbose:
+            print(f'Train set size: {train_dataset.__len__()}')
+            print(f'Valid set size: {val_dataset.__len__()}')
+            print(f'Test set size: {test_dataset.__len__()}')
+
         batch_size = self.opt.Regressor.trainer.batch_size
         num_workers = self.opt.Regressor.trainer.num_workers
-        super().set_loader(batch_size, num_workers)
+        self.train_loader = torch.utils.data.DataLoader(
+            self.get_encoder_features(train_dataset, shuffle=True), batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+        )
+        self.val_loader = torch.utils.data.DataLoader(
+            self.get_encoder_features(val_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+        )
+        self.test_loader = torch.utils.data.DataLoader(
+            self.get_encoder_features(test_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+        )
 
     def set_optimizer(self):
         assert self.model is not None and self.criterion is not None

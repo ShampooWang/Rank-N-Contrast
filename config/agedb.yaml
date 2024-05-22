@@ -3,7 +3,6 @@ data:
   dataset: AgeDB
   aug: 'crop,flip,color,grayscale'
   noise_scale: 0.0
-  two_view_aug: True
 
 feature_extract:
   # div_scale: 3.0

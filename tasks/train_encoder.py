@@ -55,11 +55,14 @@ class TrainEncoder(BaseTask):
         else:
             raise NotImplementedError(loss_type)
         
-        opt.model_name += f"2view_{opt.two_view_aug}"
+        opt.model_name += f"_2view_{opt.two_view_aug}"
 
         if getattr(opt.data, "noise_scale", 0.0) > 0.0:
             opt.model_name += f"_noise_scale_{opt.data.noise_scale}"
-            
+
+        if opt.fix_model_and_aug:
+            opt.model_name += "_fix_model&aug"
+
         opt.model_name += f"_seed_{opt.seed}"
         opt.model_name += f"_trial_{opt.trial}"
         
@@ -92,6 +95,12 @@ class TrainEncoder(BaseTask):
         else:
             self.criterion = DeltaOrderLoss(delta=config.delta, objective=config.objective)
 
+        if self.opt.fix_model_and_aug:
+            model_path = f"./checkpoints/seed322/{self.opt.Encoder.type}.pth"
+            model_params = torch.load(model_path)["model"]
+            self.model.load_state_dict(model_params)
+            print(f"Fixing encoder's initialization. Model checkpoint Loaded from {model_path}!")
+
         if torch.cuda.is_available():
             if torch.cuda.device_count() > 1:
                 self.model.encoder = torch.nn.DataParallel(self.model.encoder)
@@ -101,8 +110,7 @@ class TrainEncoder(BaseTask):
     def set_loader(self):
         batch_size = self.opt.Encoder.trainer.batch_size
         num_workers = self.opt.Encoder.trainer.num_workers
-        two_view_aug = getattr(self.opt.data, "two_view_aug", False)
-        super().set_loader(batch_size, num_workers, two_view_aug)
+        super().set_loader(batch_size, num_workers, self.opt.two_view_aug)
 
     def train_epoch(self, epoch):
         self.model.train()

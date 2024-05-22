@@ -36,6 +36,7 @@ class BaseTask:
         parser.add_argument('--ckpt', type=str, default='', help='path to the trained encoder')
         parser.add_argument('--seed', type=int, default=322)
         parser.add_argument('--save_folder', type=str, default=None)
+        parser.add_argument("--fix_model_and_aug", action="store_true", help="Fixing the model parameters and augmentation random seed")
 
         return parser
 
@@ -75,7 +76,7 @@ class BaseTask:
     
     def set_loader(self, batch_size, num_workers, two_view_aug=False):
         dataset = datasets.__dict__[self.opt.data.dataset]
-        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=two_view_aug)
+        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=two_view_aug, use_fix_aug=self.opt.fix_model_and_aug)
         val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
         test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
 

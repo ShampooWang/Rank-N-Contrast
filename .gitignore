@@ -3,6 +3,7 @@ checkpoints/*
 
 # Data
 datasets/AgeDB/AgeDB
+datasets/AgeDB/AgeDB_aug
 datasets/AgeDB/AgeDB_proto
 datasets/imdb_wiki/imdb_crop/
 datasets/imdb_wiki/wiki_crop/

@@ -25,9 +25,15 @@ class TrainE2EEncoder(BaseTask):
 
     def create_modelName_and_saveFolder(self, opt):
         opt.model_path = './checkpoints/L1'
-        opt.model_name = f'{opt.data.dataset}_{opt.Encoder.type}_ep_{opt.Encoder.trainer.epochs}_2view_{opt.two_view_aug}'
+        opt.model_name = f'{opt.data.dataset}_{opt.Encoder.type}_ep_{opt.Encoder.trainer.epochs}'
+        opt.model_name += f"2view_{opt.two_view_aug}"
+
         if getattr(opt.data, "noise_scale", 0.0) > 0.0:
             opt.model_name += f"_noise_scale_{opt.data.noise_scale}"
+
+        if opt.fix_model_and_aug:
+            opt.model_name += "fix_model&aug"
+
         opt.model_name += f"_seed_{opt.seed}"
         opt.model_name += f"_trial_{opt.trial}"
 
@@ -50,6 +56,13 @@ class TrainE2EEncoder(BaseTask):
     def set_model_and_criterion(self):
         self.model = SupResNet(name=self.opt.Encoder.type, num_classes=get_label_dim(self.opt.data.dataset))
         self.criterion = torch.nn.L1Loss()
+
+        if self.opt.fix_model_and_aug:
+            model_path = f"./checkpoints/seed322/sup{self.opt.Encoder.type}r.pth"
+            model_params = torch.load(model_path)["model"]
+            self.model.load_state_dict(model_params)
+            print(f"Fixing e2e encoder's initialization. Model checkpoint Loaded from {model_path}!")
+
         if torch.cuda.is_available():
             if torch.cuda.device_count() > 1:
                 self.model.encoder = torch.nn.DataParallel(self.model.encoder)
