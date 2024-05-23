@@ -274,3 +274,7 @@ class TrainRegressor(BaseTask):
         test_error, test_r2_score = self.testing(return_r2_score=True)
         to_print = 'Test L1 error: {:.3f}, R2 score: {:.3f}'.format(test_error, test_r2_score)
         print(to_print)
+
+    def update_ckpt(self, ckpt):
+        self.opt.ckpt = ckpt
+        self.opt.save_folder = '/'.join(ckpt.split('/')[:-1]) # default is saving regressor to the encoder ckpt's folder

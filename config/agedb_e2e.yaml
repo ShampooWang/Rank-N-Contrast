@@ -2,7 +2,6 @@ data:
   data_folder: './datasets/AgeDB'
   dataset: AgeDB
   aug: 'crop,flip,color,grayscale'
-  noise_scale: 0.0
 
 
 Encoder:
@@ -16,7 +15,7 @@ Encoder:
     save_curr_freq: 1
     test_regression_freq: 100
   optimizer:
-    learning_rate: 0.5
+    learning_rate: 0.2
     lr_decay_rate: 0.1
     weight_decay: 0.0001
     momentum: 0.9

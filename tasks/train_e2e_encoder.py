@@ -26,13 +26,13 @@ class TrainE2EEncoder(BaseTask):
     def create_modelName_and_saveFolder(self, opt):
         opt.model_path = './checkpoints/L1'
         opt.model_name = f'{opt.data.dataset}_{opt.Encoder.type}_ep_{opt.Encoder.trainer.epochs}'
-        opt.model_name += f"2view_{opt.two_view_aug}"
+        opt.model_name += f"_2view_{opt.two_view_aug}"
 
         if getattr(opt.data, "noise_scale", 0.0) > 0.0:
             opt.model_name += f"_noise_scale_{opt.data.noise_scale}"
 
         if opt.fix_model_and_aug:
-            opt.model_name += "fix_model&aug"
+            opt.model_name += "_fix_model&aug"
 
         opt.model_name += f"_seed_{opt.seed}"
         opt.model_name += f"_trial_{opt.trial}"
@@ -54,20 +54,20 @@ class TrainE2EEncoder(BaseTask):
         return opt
 
     def set_model_and_criterion(self):
-        self.model = SupResNet(name=self.opt.Encoder.type, num_classes=get_label_dim(self.opt.data.dataset))
-        self.criterion = torch.nn.L1Loss()
+        model = SupResNet(name=self.opt.Encoder.type, num_classes=get_label_dim(self.opt.data.dataset))
+        criterion = torch.nn.L1Loss()
 
         if self.opt.fix_model_and_aug:
-            model_path = f"./checkpoints/seed322/sup{self.opt.Encoder.type}r.pth"
+            model_path = f"./checkpoints/seed322/sup{self.opt.Encoder.type}.pth"
             model_params = torch.load(model_path)["model"]
-            self.model.load_state_dict(model_params)
+            model.load_state_dict(model_params)
             print(f"Fixing e2e encoder's initialization. Model checkpoint Loaded from {model_path}!")
 
         if torch.cuda.is_available():
             if torch.cuda.device_count() > 1:
-                self.model.encoder = torch.nn.DataParallel(self.model.encoder)
-            self.model = self.model.cuda()
-            self.criterion = self.criterion.cuda()
+                model.encoder = torch.nn.DataParallel(model.encoder)
+            self.model = model.cuda()
+            self.criterion = criterion.cuda()
 
     def set_loader(self):
         batch_size = self.opt.Encoder.trainer.batch_size
@@ -90,7 +90,7 @@ class TrainE2EEncoder(BaseTask):
             if isinstance(images, list):
                 images = torch.cat([images[0], images[1]], dim=0)
                 labels = labels.repeat(2, 1)
-
+                
             if torch.cuda.is_available():
                 labels = labels.cuda(non_blocking=True)
                 images = images.cuda(non_blocking=True)

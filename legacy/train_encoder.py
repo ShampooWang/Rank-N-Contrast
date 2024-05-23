@@ -114,7 +114,7 @@ def set_loader(opt):
         num_workers=opt.Encoder.trainer.num_workers, pin_memory=True, drop_last=False)
     
     test_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=opt.Encoder.trainer.batch_size, shuffle=False,
+        test_dataset, batch_size=opt.Encoder.trainer.batch_size, shuffle=False,
         num_workers=opt.Encoder.trainer.num_workers, pin_memory=True, drop_last=False)
     
     return train_loader, val_loader, test_loader

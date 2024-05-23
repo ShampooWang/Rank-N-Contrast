@@ -19,6 +19,7 @@ Encoder:
     save_curr_freq: 1
     test_regression_freq: 100
   optimizer:
+    type: sgd
     learning_rate: 0.5
     lr_decay_rate: 0.1
     weight_decay: 0.0001

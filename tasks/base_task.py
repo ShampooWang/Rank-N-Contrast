@@ -99,6 +99,7 @@ class BaseTask:
         parameters = list(self.model.parameters()) + list(self.criterion.parameters())
         config = self.opt.Encoder.optimizer
         optimizer_type = getattr(config, "type", "sgd")
+        print(f"Using {optimizer_type} optimizer")
 
         if optimizer_type == "sgd":
             optimizer = torch.optim.SGD(parameters, lr=config.learning_rate,
@@ -139,7 +140,6 @@ class BaseTask:
             state = {**state, **others}
         torch.save(state, save_file)
         del state
-
 
     def resume_status(self):
         if self.opt.resume is not None:

@@ -25,31 +25,31 @@ class AgeDB(BaseDataset):
         self.use_fix_aug = use_fix_aug and split == "train"
         self.aug_dir = "./datasets/AgeDB/AgeDB_aug/"
         
-        if self.use_fix_aug:
-            normalize = transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-            self.transform = transforms.Compose([
-                transforms.ToTensor(),
-                normalize
-            ])
-            print(f"Fixing data augmentation. Loading augmented image from {self.aug_dir}")
+        # if self.use_fix_aug:
+        #     normalize = transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+        #     self.transform = transforms.Compose([
+        #         transforms.ToTensor(),
+        #         normalize
+        #     ])
+        #     print(f"Fixing data augmentation. Loading augmented image from {self.aug_dir}")
 
     def __getitem__(self, index):
-        self.set_seed()
+        # self.set_seed()
         row = self.df.iloc[index]
         label = np.asarray([row['age']]).astype(np.float32)
         rank = np.asarray([row['rank']]).astype(np.float32)
 
-        if self.use_fix_aug:
-            img_name = row['path'].split("/")[-1].split(".")[0]
-            img_dir = os.path.join(self.aug_dir, img_name)
-            imgs = [ Image.open(os.path.join(img_dir, f"view{i}.png")).convert('RGB') for i in range(2)]
-            if self.two_view_aug:
-                img = [ self.transform(_img) for _img in imgs ]
-            else:
-                img = self.transform(imgs[0])
-        else:
-            img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
-            img = self.transform(img)
+        # if self.use_fix_aug:
+        #     img_name = row['path'].split("/")[-1].split(".")[0]
+        #     img_dir = os.path.join(self.aug_dir, img_name)
+        #     imgs = [ Image.open(os.path.join(img_dir, f"view{i}.png")).convert('RGB') for i in range(2)]
+        #     if self.two_view_aug:
+        #         img = [ self.transform(_img) for _img in imgs ]
+        #     else:
+        #         img = self.transform(imgs[0])
+        # else:
+        img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
+        img = self.transform(img)
 
         return {
             "img": img, 

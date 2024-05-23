@@ -108,9 +108,25 @@ class TrainEncoder(BaseTask):
             self.criterion = self.criterion.cuda()
 
     def set_loader(self):
+        dataset = datasets.__dict__[self.opt.data.dataset]
+        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=self.opt.two_view_aug, use_fix_aug=self.opt.fix_model_and_aug)
+        val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
+        test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
+        print(f'Train set size: {train_dataset.__len__()}')
+        print(f'Valid set size: {val_dataset.__len__()}')
+        print(f'Test set size: {test_dataset.__len__()}')
+
         batch_size = self.opt.Encoder.trainer.batch_size
         num_workers = self.opt.Encoder.trainer.num_workers
-        super().set_loader(batch_size, num_workers, self.opt.two_view_aug)
+        self.train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True
+        )
+        self.val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
+        )
+        self.test_loader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
+        )
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -224,21 +240,21 @@ class TrainEncoder(BaseTask):
                 self.save_model(epoch, curr_last_pth)
 
             if epoch > 1 and epoch != self.opt.Encoder.trainer.epochs and epoch % self.opt.Encoder.trainer.test_regression_freq == 0:
-                self.regressor_trainer.opt.ckpt = curr_last_pth
+                self.regressor_trainer.update_ckpt(curr_last_pth)
                 self.regressor_trainer.run(parser)
 
         # save and test the last model
         last_pth = os.path.join(self.opt.save_folder, 'last.pth')
         self.save_model(self.opt.Encoder.trainer.epochs, last_pth)
-        self.regressor_trainer.opt.ckpt = last_pth
+        self.regressor_trainer.update_ckpt(last_pth)
         self.regressor_trainer.run(parser)
 
         # best val loss
         print(f"Best pretraining validation loss: {best_loss:.3f}")
-        self.regressor_trainer.opt.ckpt = best_val_loss_pth
+        self.regressor_trainer.update_ckpt(best_val_loss_pth)
         self.regressor_trainer.run(parser)
 
         # best avg_nbr_diffs
         print(f"Best avg_nbr_diffs: {best_nbr_ydiff:.3f}")
-        self.regressor_trainer.opt.ckpt = best_nbr_ydiff_pth
+        self.regressor_trainer.update_ckpt(best_nbr_ydiff_pth)
         self.regressor_trainer.run(parser)

@@ -23,7 +23,7 @@ class IMDBWIKI(BaseDataset):
         self.weights = self._prepare_weights(reweight=reweight, lds=lds, lds_kernel=lds_kernel, lds_ks=lds_ks, lds_sigma=lds_sigma)
 
     def __getitem__(self, index):
-        self.set_seed()
+        # self.set_seed()
         index = index % len(self.df)
         row = self.df.iloc[index]
         img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
