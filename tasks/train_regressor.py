@@ -97,12 +97,17 @@ class TrainRegressor(BaseTask):
         loader = torch.utils.data.DataLoader(
             dataset, batch_size=config.batch_size, shuffle=shuffle, num_workers=config.num_workers, pin_memory=False
         )
-        div_scale = getattr(self.opt.feature_extract, "div_scale", 1.0)
+
+        if hasattr(self.opt, "feature_extract"):
+            div_scale = getattr(self.opt.feature_extract, "div_scale", 1.0)
+            normalized_by_D = getattr(self.opt.feature_extract, "normalized_by_D", False)
+            if normalized_by_D: 
+                print(f"Normalize features by sqrt(D)")
+        else:
+            div_scale = 1.0
+            normalized_by_D = False
+            
         print(f"Start extracting frozen features. Divide feature by the scale: {div_scale}")
-        normalized_by_D = getattr(self.opt.feature_extract, "normalized_by_D", False)
-        if normalized_by_D: 
-            print(f"Normalize features by sqrt(D)")
-        
         Z = []
         y = []
         with torch.no_grad():
