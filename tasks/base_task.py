@@ -40,19 +40,20 @@ class BaseTask:
 
         return parser
 
-    def create_modelName_and_saveFolder(self, opt):
-        raise NotImplementedError
-
     def parse_option(self, parser, log_file=True):
         if len(parser._actions) == 2: # help and task
             parser = self.add_general_arguments(parser)
+
         opt = parser.parse_args()
         config = yaml.load(open(opt.config, "r"), Loader=yaml.FullLoader)
         opt = OrderedNamespace([opt, config])
-        opt = self.create_modelName_and_saveFolder(opt)
-        if log_file:
-            self.set_logging(log_file)
-        print(f"Model name: {opt.model_name}")
+
+        if hasattr(self, "create_modelName_and_saveFolder"):
+            opt = self.create_modelName_and_saveFolder(opt)
+            if log_file:
+                self.set_logging(log_file)
+            print(f"Model name: {opt.model_name}")
+
         print(f"Options: {opt}")
         self.opt = opt
 

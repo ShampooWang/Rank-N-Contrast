@@ -218,6 +218,7 @@ class TrainEncoder(BaseTask):
     def run(self, parser):
         self.set_up_training(parser)
         self.regressor_trainer.parse_option(parser, log_file=False)
+        self.regressor_trainer.opt.pre_extract = True
         best_val_loss_pth = os.path.join(self.opt.save_folder, 'best_val_loss.pth')
         best_nbr_ydiff_pth = os.path.join(self.opt.save_folder, 'best_nbr_ydiff.pth')
         curr_last_pth = os.path.join(self.opt.save_folder, 'curr_last.pth')

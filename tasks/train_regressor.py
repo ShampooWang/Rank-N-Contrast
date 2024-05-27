@@ -35,7 +35,10 @@ class FeatureLabel_pairs(data.Dataset):
         return len(self.labels)
     
     def __getitem__(self, index):
-        return self.features[index], self.labels[index]
+        return {
+            "feature": self.features[index], 
+            "label": self.labels[index]
+        }
 
 
 class TrainRegressor(BaseTask):
@@ -43,12 +46,24 @@ class TrainRegressor(BaseTask):
         super().__int__()
         self.encoder = None
 
+    def add_general_arguments(self, parser):
+        parser = super().add_general_arguments(parser)
+        parser.add_argument("--two_view_aug", action="store_true", help="Add two views of augmentation for training")
+        parser.add_argument("--pre_extract", action="store_true", help="Extracting the features firstly")
+
+        return parser
+    
     def create_modelName_and_saveFolder(self, opt):
-        div_scale = getattr(opt.feature_extract, "div_scale", 1.0)
-        normalized_by_D = getattr(opt.feature_extract, "normalized_by_D", False)
-        opt.model_name = 'Regressor_{}_divScale_{}_normalied_D_{}_trial_{}'\
-        .format(opt.data.dataset, div_scale, normalized_by_D, opt.trial)    
-        
+        if opt.pre_extract:
+            div_scale = getattr(opt.feature_extract, "div_scale", 1.0)
+            normalized_by_D = getattr(opt.feature_extract, "normalized_by_D", False)
+            opt.model_name = 'Regressor_{}_divScale_{}_normalied_D_{}_trial_{}'\
+            .format(opt.data.dataset, div_scale, normalized_by_D, opt.trial)    
+        else:
+            reg_cfg = opt.Regressor
+            opt.model_name = "Regressor_{}_ep_{}_lr_{}_bsz_{}_trial_{}"\
+            .format(opt.data.dataset, reg_cfg.trainer.epochs, reg_cfg.optimizer.learning_rate, reg_cfg.trainer.batch_size, opt.trial)
+
         if opt.resume is not None:
             opt.model_name = opt.resume.split('/')[-1][:-len('_last.pth')]
         
@@ -123,7 +138,13 @@ class TrainRegressor(BaseTask):
 
     def set_loader(self):
         dataset = datasets.__dict__[self.opt.data.dataset]
-        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=False, use_fix_aug=self.opt.fix_model_and_aug)
+
+        if self.opt.pre_extract: 
+            two_view_aug = False
+        else:
+            two_view_aug = self.opt.two_view_aug
+
+        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data, two_view_aug=two_view_aug, use_fix_aug=self.opt.fix_model_and_aug)
         val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
         test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
 
@@ -132,30 +153,29 @@ class TrainRegressor(BaseTask):
             print(f'Valid set size: {val_dataset.__len__()}')
             print(f'Test set size: {test_dataset.__len__()}')
 
+        if self.opt.pre_extract:
+            train_dataset = self.get_encoder_features(train_dataset, shuffle=True)
+            val_dataset = self.get_encoder_features(val_dataset)
+            test_dataset = self.get_encoder_features(test_dataset)
+
         batch_size = self.opt.Regressor.trainer.batch_size
         num_workers = self.opt.Regressor.trainer.num_workers
-        self.train_loader = torch.utils.data.DataLoader(
-            self.get_encoder_features(train_dataset, shuffle=True), batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
-        )
-        self.val_loader = torch.utils.data.DataLoader(
-            self.get_encoder_features(val_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
-        )
-        self.test_loader = torch.utils.data.DataLoader(
-            self.get_encoder_features(test_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
-        )
+        self.train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        self.val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        self.test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
-    def set_optimizer(self):
-        assert self.model is not None and self.criterion is not None
-        parameters = list(self.model.parameters())
-        config = self.opt.Regressor.optimizer
-        optimizer = torch.optim.SGD(
-            parameters, 
-            lr=config.learning_rate,
-            momentum=config.momentum, 
-            weight_decay=config.weight_decay
-        )
+    # def set_optimizer(self):
+    #     assert self.model is not None and self.criterion is not None
+    #     parameters = list(self.model.parameters())
+    #     config = self.opt.Regressor.optimizer
+    #     optimizer = torch.optim.SGD(
+    #         parameters, 
+    #         lr=config.learning_rate,
+    #         momentum=config.momentum, 
+    #         weight_decay=config.weight_decay
+    #     )
 
-        self.optimizer = optimizer
+    #     self.optimizer = optimizer
 
     def resume_status(self):
         if self.opt.resume is not None:
@@ -169,16 +189,31 @@ class TrainRegressor(BaseTask):
             self.start_epoch = 1
 
     def train_epoch(self, epoch):
+        self.encoder.eval()
         self.model.train()
         batch_time = AverageMeter()
         data_time = AverageMeter()
         losses = AverageMeter()
         end = time.time()
-        for idx, (features, labels) in enumerate(self.train_loader):
+
+        for idx, returned_items in enumerate(self.train_loader):
             data_time.update(time.time() - end)
+
             with torch.no_grad():
-                features = features.cuda(non_blocking=True)
-                labels = labels.cuda(non_blocking=True)
+                labels = returned_items["label"].cuda(non_blocking=True)
+                if self.opt.pre_extract:
+                    # assert "feature" in returned_items.keys(), returned_items.keys()
+                    features = returned_items["feature"].cuda(non_blocking=True)
+                else:
+                    # assert "img" in returned_items.keys(), returned_items.keys()
+                    # Two crop transform
+                    images = returned_items["img"]
+                    if isinstance(images, list):
+                        images = torch.cat([images[0], images[1]], dim=0)
+                    images = images.cuda(non_blocking=True)
+                    labels = labels.repeat(2, 1)
+                    features = self.encoder(images)
+
             bsz = labels.shape[0]
             output = self.model(features.detach())
             loss = self.criterion(output, labels)
@@ -191,19 +226,19 @@ class TrainRegressor(BaseTask):
             batch_time.update(time.time() - end)
             end = time.time()
 
-            # if (idx + 1) % opt.Regressor.trainer.print_freq == 0:
-            #     print('Train: [{0}][{1}/{2}]\t'
-            #           'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-            #           'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-            #           'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
-            #         epoch, idx + 1, len(loader), batch_time=batch_time,
-            #         data_time=data_time, loss=losses))
-            #     sys.stdout.flush()
+            if not self.opt.pre_extract and (idx + 1) %  self.opt.Regressor.trainer.print_freq == 0:
+                print('Train: [{0}][{1}/{2}]\t'
+                      'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
+                    epoch, idx + 1, len(self.train_loader), batch_time=batch_time,
+                    data_time=data_time, loss=losses))
+                sys.stdout.flush()
 
-        if self.opt.Regressor.trainer.verbose:
+        if self.opt.pre_extract and self.opt.Regressor.trainer.verbose:
             print('Epoch [{0}], average loss: {1.avg:.3f}'.format(epoch, losses))
+            sys.stdout.flush()
 
-        sys.stdout.flush()
         
     def validation(self, return_r2_score=False):
         self.model.eval()
@@ -212,9 +247,16 @@ class TrainRegressor(BaseTask):
         r2metric = R2Score()
         
         with torch.no_grad():
-            for features, labels in self.val_loader:
-                features = features.cuda(non_blocking=True)
-                labels = labels.cuda(non_blocking=True)
+            for returned_items in self.val_loader:
+                labels = returned_items["label"].cuda(non_blocking=True)
+                if self.opt.pre_extract:
+                    # assert "feature" in returned_items.keys(), returned_items.keys()
+                    features = returned_items["feature"].cuda(non_blocking=True)
+                else:
+                    # assert "img" in returned_items.keys(), returned_items.keys()
+                    images = returned_items["img"].cuda(non_blocking=True)
+                    features = self.encoder(images)
+
                 bsz = labels.shape[0]
                 output = self.model(features)
                 error_l1 = criterion_l1(output, labels)
@@ -234,9 +276,16 @@ class TrainRegressor(BaseTask):
         r2metric = R2Score()
         
         with torch.no_grad():
-            for features, labels in self.test_loader:
-                features = features.cuda(non_blocking=True)
-                labels = labels.cuda(non_blocking=True)
+            for returned_items in self.test_loader:
+                labels = returned_items["label"].cuda(non_blocking=True)
+                if self.opt.pre_extract:
+                    # assert "feature" in returned_items.keys(), returned_items.keys()
+                    features = returned_items["feature"].cuda(non_blocking=True)
+                else:
+                    # assert "img" in returned_items.keys(), returned_items.keys()
+                    images = returned_items["img"].cuda(non_blocking=True)
+                    features = self.encoder(images)
+
                 bsz = labels.shape[0]
                 output = self.model(features)
                 error_l1 = criterion_l1(output, labels)
@@ -251,11 +300,13 @@ class TrainRegressor(BaseTask):
 
     def run(self, parser):
         self.set_up_training(parser)
+        assert not (self.opt.pre_extract and self.two_view_aug)
+        
         save_file_best = os.path.join(self.opt.save_folder, f"{self.opt.model_name}_best.pth")
         save_file_last = os.path.join(self.opt.save_folder, f"{self.opt.model_name}_last.pth")
         epoch_counter = range(self.start_epoch, self.opt.Regressor.trainer.epochs + 1)
         verbose = self.opt.Regressor.trainer.verbose
-        if not verbose:
+        if self.opt.pre_extract and not verbose:
             epoch_counter = tqdm(epoch_counter)
 
         print("Start training regressor")
@@ -263,9 +314,14 @@ class TrainRegressor(BaseTask):
             self.adjust_learning_rate(self.opt.Regressor, epoch)
             self.train_epoch(epoch)
             valid_error = self.validation()
+
             if epoch == 1 or valid_error < best_error :
                 best_error = valid_error
                 self.save_model(epoch, save_file_best, others={"best_error": best_error}, verbose=verbose)
+
+            if not self.opt.pre_extract:
+                print('Val L1 error: {:.3f}'.format(valid_error))
+                print(f"Best Error: {best_error:.3f}")
 
         # Save the last checkpoint
         self.save_model(epoch, save_file_last, others={"last_error": valid_error}, verbose=verbose)

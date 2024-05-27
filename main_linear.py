@@ -42,6 +42,7 @@ def parse_option():
     parser.add_argument('--ordinal_pretraining', type=bool, default=False)
     parser.add_argument('--orthog_basis', type=bool, default=False)
     parser.add_argument('--save_folder', type=str, default=None)
+    parser.add_argument("--fix_model_and_aug", action="store_true", help="Fixing the model parameters and augmentation random seed")
 
     opt = parser.parse_args()
 
@@ -131,6 +132,12 @@ def set_model(opt):
             k = k.replace("module.", "")
             new_state_dict[k] = v
         state_dict = new_state_dict
+
+    if opt.fix_model_and_aug:
+        model_path = f"./checkpoints/seed322/{opt.model}_regressor.pth"
+        model_params = torch.load(model_path)["model"]
+        regressor.load_state_dict(model_params)
+        print(f"Fixing regressor's initialization. Model checkpoint Loaded from {model_path}!")
 
     model = model.cuda()
     regressor = regressor.cuda()
