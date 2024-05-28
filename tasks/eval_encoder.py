@@ -25,8 +25,10 @@ class EvalEncoder(BaseTask):
     def add_general_arguments(self, parser):
         parser = super().add_general_arguments(parser)
         parser.add_argument('--sup_resnet', action='store_true', help='whether to use supervised ResNet')
+        parser.add_argument('--add_sup_resnet', type=str, default=None, help='whether to add supervised ResNet')
         parser.add_argument('--regerssor_ckpt', type=str, default=None, help='path to the trained regressor')
         parser.add_argument('--umap_pic_name', type=str, default=None, help='Name of the umap picture')
+        parser.add_argument('--error_pic_name', type=str, default=None, help='Name of the umap picture')
 
         return parser
 
@@ -47,42 +49,58 @@ class EvalEncoder(BaseTask):
 
         # Load regressor
         if self.opt.regerssor_ckpt is not None:
-            dim_in = model_dict[self.opt.model][1]
-            dim_out = get_label_dim(self.opt.dataset)
+            dim_in = model_dict[self.opt.Encoder.type][1]
+            dim_out = get_label_dim(self.opt.data.dataset)
             regressor = torch.nn.Linear(dim_in, dim_out).cuda()
-            regressor.load_state_dict(torch.load(self.opt.regerssor_ckpt)['model'])
+            reg_ckpt = torch.load(self.opt.regerssor_ckpt)
+            if "model" in reg_ckpt:
+                regressor.load_state_dict(reg_ckpt["model"])
+            else:
+                regressor.load_state_dict(reg_ckpt["state_dict"])
             print(f"<=== Epoch [{ckpt['epoch']}] regressor checkpoint Loaded from {self.opt.regerssor_ckpt}!")
             self.regressor = regressor
+
+        # Add supervised resnet for computing mae gains
+        if self.opt.add_sup_resnet is not None:
+            assert os.path.exists(self.opt.add_sup_resnet), self.opt.add_sup_resnet
+            print(f"Add referenced supervised resnet for computing MAE gains from {self.opt.add_sup_resnet}")
+            supResNet = SupResNet(name=self.opt.Encoder.type, num_classes=get_label_dim(self.opt.data.dataset))
+            supResNet.load_state_dict(torch.load(self.opt.add_sup_resnet, map_location='cpu')["model"])
+            self.supResNet = supResNet.cuda()
+            self.label2error_supResNet = defaultdict(list) # Collecting testing errors of the reference supresnet
 
         # Set criterion
         # self.criterion = torch.nn.L1Loss().cuda()
 
     def set_loader(self):
         dataset = datasets.__dict__[self.opt.data.dataset]
-        train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data)
-        val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
-        test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
+        self.train_dataset = dataset(seed=self.opt.seed, split='train', **self.opt.data)
+        self.val_dataset = dataset(seed=self.opt.seed, split='val', **self.opt.data)
+        self.test_dataset = dataset(seed=self.opt.seed, split='test', **self.opt.data)
 
-        print(f'Train set size: {train_dataset.__len__()}')
-        print(f'Valid set size: {val_dataset.__len__()}')
-        print(f'Test set size: {test_dataset.__len__()}')
+        print(f'Train set size: {self.train_dataset.__len__()}')
+        print(f'Valid set size: {self.val_dataset.__len__()}')
+        print(f'Test set size: {self.test_dataset.__len__()}')
 
         batch_size = 64
         num_workers = 4
         self.train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=False
+            self.train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
         )
         self.val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
+            self.val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
         )
         self.test_loader = torch.utils.data.DataLoader(
-            test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
+            self.test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False
         )
         
     def testing(self):
         self.model.eval()
         if hasattr(self, "regressor"):
             self.regressor.eval()
+        
+        if hasattr(self, "supResNet"):
+            self.supResNet.eval()
 
         losses_mae = AverageMeter()
         losses_se = AverageMeter()
@@ -117,6 +135,10 @@ class EvalEncoder(BaseTask):
                     for lab, error in zip(labels, loss_l1):
                         label2error[lab.item()].append(error.item())
 
+                    if hasattr(self, "supResNet") and hasattr(self, "label2error_supResNet"):
+                        for lab, error in zip(labels, (self.supResNet(images) - labels).abs()):
+                            self.label2error_supResNet[lab.item()].append(error.item())
+
                 for lab, feat in zip(labels, features):
                     age2feats[lab.item()].append(feat)
 
@@ -131,6 +153,7 @@ class EvalEncoder(BaseTask):
 
     def run(self, parser):
         self.parse_option(parser, log_file=False)
+        self.set_seed()
         self.set_model_and_criterion()
         self.set_loader()
 
@@ -158,4 +181,13 @@ class EvalEncoder(BaseTask):
                 feats=Z,
                 labels=y,
                 save_path=f'./pics/2d_umap/{self.opt.umap_pic_name}.png'
+            )
+
+        # Plot error distribution
+        if self.opt.error_pic_name is not None:
+            plot_error_distribution(
+                data_dist=self.train_dataset.get_data_occurences(),
+                label2error=label2error,
+                pic_name=self.opt.error_pic_name,
+                ref_errors=getattr(self, "label2error_supResNet", None)
             )

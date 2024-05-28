@@ -37,13 +37,12 @@ class BaseTask:
         parser.add_argument('--seed', type=int, default=322)
         parser.add_argument('--save_folder', type=str, default=None)
         parser.add_argument("--fix_model_and_aug", action="store_true", help="Fixing the model parameters and augmentation random seed")
+        parser.add_argument("--two_view_aug", action="store_true", help="Add two views of augmentation for training")
 
         return parser
 
     def parse_option(self, parser, log_file=True):
-        if len(parser._actions) == 2: # help and task
-            parser = self.add_general_arguments(parser)
-
+        parser = self.add_general_arguments(parser)    
         opt = parser.parse_args()
         config = yaml.load(open(opt.config, "r"), Loader=yaml.FullLoader)
         opt = OrderedNamespace([opt, config])

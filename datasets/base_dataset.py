@@ -4,6 +4,7 @@ from utils import TwoCropTransform
 import torch
 import random
 import logging
+import numpy as np
 
 print = logging.info
 
@@ -21,6 +22,10 @@ class BaseDataset(data.Dataset):
     def __getitem__(self, index):
         raise NotImplementedError
     
+    def get_data_occurences(self):
+        labels, occurence = np.unique(self.df["age"], return_counts=True)
+        return { age: occ for (age, occ) in zip(labels, occurence) }
+
     def set_seed(self):
         torch.manual_seed(self.seed)
         random.seed(self.seed)

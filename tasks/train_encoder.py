@@ -23,16 +23,6 @@ print = logging.info
 
 
 class TrainEncoder(BaseTask):
-    def __init__(self):
-        super().__init__()
-        self.regressor_trainer = TrainRegressor()
-
-    def add_general_arguments(self, parser):
-        parser = super().add_general_arguments(parser)
-        parser.add_argument("--two_view_aug", action="store_false", help="Add two views of augmentation for training")
-
-        return parser
-    
     def create_modelName_and_saveFolder(self, opt):
         loss_type = opt.Encoder.loss.loss_type 
         if "deltaorder" in loss_type:
@@ -217,11 +207,14 @@ class TrainEncoder(BaseTask):
 
     def run(self, parser):
         self.set_up_training(parser)
-        self.regressor_trainer.parse_option(parser, log_file=False)
-        self.regressor_trainer.opt.pre_extract = True
         best_val_loss_pth = os.path.join(self.opt.save_folder, 'best_val_loss.pth')
         best_nbr_ydiff_pth = os.path.join(self.opt.save_folder, 'best_nbr_ydiff.pth')
         curr_last_pth = os.path.join(self.opt.save_folder, 'curr_last.pth')
+
+        print("Adding regressor for the regression evaluation")
+        test_regression_freq = getattr(self.opt.Encoder.trainer, "test_regression_freq", -1)
+        self.regressor_trainer = TrainRegressor()
+        self.regressor_trainer.parse_option(parser, log_file=False)
 
         # training routine
         for epoch in range(self.start_epoch, self.opt.Encoder.trainer.epochs + 1):
@@ -240,7 +233,7 @@ class TrainEncoder(BaseTask):
             if epoch % self.opt.Encoder.trainer.save_curr_freq == 0:
                 self.save_model(epoch, curr_last_pth)
 
-            if epoch > 1 and epoch != self.opt.Encoder.trainer.epochs and epoch % self.opt.Encoder.trainer.test_regression_freq == 0:
+            if (test_regression_freq > 0) and (epoch > 1) and (epoch != self.opt.Encoder.trainer.epochs) and (epoch % test_regression_freq == 0):
                 self.regressor_trainer.update_ckpt(curr_last_pth)
                 self.regressor_trainer.run(parser)
 
@@ -251,11 +244,11 @@ class TrainEncoder(BaseTask):
         self.regressor_trainer.run(parser)
 
         # best val loss
-        print(f"Best pretraining validation loss: {best_loss:.3f}")
-        self.regressor_trainer.update_ckpt(best_val_loss_pth)
-        self.regressor_trainer.run(parser)
+        # print(f"Best pretraining validation loss: {best_loss:.3f}")
+        # self.regressor_trainer.update_ckpt(best_val_loss_pth)
+        # self.regressor_trainer.run(parser)
 
         # best avg_nbr_diffs
-        print(f"Best avg_nbr_diffs: {best_nbr_ydiff:.3f}")
-        self.regressor_trainer.update_ckpt(best_nbr_ydiff_pth)
-        self.regressor_trainer.run(parser)
+        # print(f"Best avg_nbr_diffs: {best_nbr_ydiff:.3f}")
+        # self.regressor_trainer.update_ckpt(best_nbr_ydiff_pth)
+        # self.regressor_trainer.run(parser)

@@ -17,12 +17,6 @@ class TrainE2EEncoder(BaseTask):
     def __init__(self):
         super().__init__()
 
-    def add_general_arguments(self, parser):
-        parser = super().add_general_arguments(parser)
-        parser.add_argument("--two_view_aug", action="store_false", help="Add two views of augmentation for training")
-
-        return parser
-
     def create_modelName_and_saveFolder(self, opt):
         opt.model_path = './checkpoints/L1'
         opt.model_name = f'{opt.data.dataset}_{opt.Encoder.type}_ep_{opt.Encoder.trainer.epochs}'

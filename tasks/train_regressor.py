@@ -47,10 +47,10 @@ class TrainRegressor(BaseTask):
         self.encoder = None
 
     def add_general_arguments(self, parser):
-        parser = super().add_general_arguments(parser)
-        parser.add_argument("--two_view_aug", action="store_true", help="Add two views of augmentation for training")
+        if len(parser._actions) == 2: # help and task
+            parser = super().add_general_arguments(parser)
         parser.add_argument("--pre_extract", action="store_true", help="Extracting the features firstly")
-
+        
         return parser
     
     def create_modelName_and_saveFolder(self, opt):
@@ -210,8 +210,8 @@ class TrainRegressor(BaseTask):
                     images = returned_items["img"]
                     if isinstance(images, list):
                         images = torch.cat([images[0], images[1]], dim=0)
+                        labels = labels.repeat(2, 1)
                     images = images.cuda(non_blocking=True)
-                    labels = labels.repeat(2, 1)
                     features = self.encoder(images)
 
             bsz = labels.shape[0]

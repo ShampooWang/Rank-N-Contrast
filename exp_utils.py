@@ -61,22 +61,50 @@ def plot_svd(feats, save_path):
     plt.ylabel('Log of singular values')
     plt.savefig(save_path)
 
-def plot_error_distribution(label_2_error, save_path):
-    label_2_error = { lab: sum(error)/len(error) for lab, error in label_2_error.items() }
-    label_2_error = dict(sorted(label_2_error.items()))
-    labels = [ f"{lab}" for lab in label_2_error.keys() ]
-    errors = list(label_2_error.values())
-    assert len(labels) == len(errors)
-    x = [ i+1 for i in range(len(labels)) ]
-    fig, ax = plt.subplots(figsize = (15,4))
-    ax.tick_params(axis='x', labelsize=7)
-    ax.bar(x, errors)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=65)
-    plt.title('Age vs. MAE')
-    plt.xlabel('Age')
-    plt.ylabel('MAE')
-    plt.savefig(save_path)
+def plot_error_distribution(data_dist, label2error, pic_name, pic_directory="./pics/error_distribution/", ref_errors=None):
+    ages = np.arange(0, 102)  # Ages from 0 to 101
+    if isinstance(label2error[0], list):
+        label2error = { int(lab): sum(errors)/len(errors) for lab, errors in label2error.items() if len(errors) > 0 }
+    label2error = dict(sorted(label2error.items()))
+
+    # Create num_samples and mae_dist (or mae_gains)
+    num_samples = np.zeros(102)
+    num_samples[list(data_dist.keys())] += np.array(list(data_dist.values()))
+    if ref_errors is not None:
+        if isinstance(ref_errors[0], list):
+            ref_errors = { int(lab): sum(errors)/len(errors) for lab, errors in ref_errors.items() if len(errors) > 0 }
+        ref_errors = dict(sorted(ref_errors.items()))
+        mae_gains = np.zeros(102)
+        mae_gains[list(label2error.keys())] += np.array(list(label2error.values())) - np.array(list(ref_errors.values()))
+    else:
+        mae_dist = np.zeros(102)
+        mae_dist[list(label2error.keys())] += np.array(list(label2error.values()))
+
+    # Create a figure with two subplots
+    fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    # Plot label distribution
+    axs[0].bar(ages, num_samples, color='blue')
+    axs[0].set_ylabel('# of training samples')
+    axs[0].set_title('Label Distribution and MAE by Age')
+
+    # Plot MAE gains
+    axs[1].set_xlabel('Target value (Age)')
+    if ref_errors is not None:
+        axs[1].bar(ages, mae_gains, color='orange')
+        axs[1].set_ylabel('MAE gains')
+        axs[1].axhline(0, color='gray', linewidth=0.8)  # Zero line for reference
+        pic_name += "_mae_gains"
+    else:
+        axs[1].bar(ages, mae_dist, color='orange')
+        axs[1].set_ylabel('MAE')
+    
+
+    if not os.path.exists(pic_directory):
+        os.makedirs(pic_directory)
+
+    plt.savefig(os.path.join(pic_directory, f"{pic_name}.png"))
+
 
 def plot_feature_norm_distribution(age2feats, save_path):
     age2feats_norm = { lab: np.linalg.norm(feats, axis=1).mean(0) for lab, feats in age2feats.items() }
