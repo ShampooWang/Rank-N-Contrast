@@ -4,10 +4,10 @@ from collections import defaultdict
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-def main(split):
+def main(data_csv, split):
 
     # Load the data
-    data = pd.read_csv('imdb_wiki.csv')
+    data = pd.read_csv(data_csv)
     target_data = data[data["split"] == split]
     distribution = defaultdict(int)
 
@@ -31,4 +31,4 @@ def main(split):
 
 
 if __name__ == "__main__":
-    main("train")
+    main("/tmp2/jeffwang/Rank-N-Contrast/datasets/AgeDB/uniform_agedb.csv", "test")

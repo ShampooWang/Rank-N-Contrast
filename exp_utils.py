@@ -4,7 +4,7 @@ import numpy as np
 import umap
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+from collections import defaultdict
 
 def plot_2d_umap(feats, labels, save_path='./pics/AgeDB.png'):
     print(feats.shape)
@@ -32,7 +32,7 @@ def plot_max_dist(age2feats, show_value=False, group_by_age=False, save_path='./
     else:
         dist_mtx = all_dists
 
-    # Plot using imshow with a blue colormap
+    # Plot using imshow with a colormap
     plt.figure(figsize=(60, 40) if show_value else (12,8))
     plt.imshow(dist_mtx, cmap='Oranges')
     plt.colorbar()  # Show color scale
@@ -53,6 +53,31 @@ def plot_max_dist(age2feats, show_value=False, group_by_age=False, save_path='./
 
     plt.savefig(save_path)  
 
+
+def plot_max_error_dists(label2error, age2feats, data_occurences, Z, y, save_path):
+    label2error_reduced = { int(lab): sum(errors)/len(errors) for lab, errors in label2error.items() if len(errors) > 0 }
+    max_error_lab = max(label2error_reduced, key=label2error_reduced.get)
+    print(max_error_lab)
+    print(label2error[max_error_lab])
+    print(f"Max data occurences: {max(data_occurences, key=data_occurences.get)}")
+    
+    max_error_feats = age2feats[max_error_lab]
+    pairwise_dists = np.linalg.norm(max_error_feats[:, None, :] - Z[None, :, :], axis=-1)
+    label_diffs = np.abs(y - max_error_lab)
+    sorted_indices = label_diffs.argsort()
+    sorted_dists = pairwise_dists[:, sorted_indices]
+    correlations = [ np.corrcoef(dists, label_diffs[sorted_indices])[0, 1] for dists in sorted_dists ]
+    print(correlations)
+
+    plt.figure(figsize=(12, 3))
+    plt.imshow(sorted_dists, aspect='auto', cmap="Oranges")
+    plt.colorbar()
+    plt.axhline(y=0.5, color='black', linewidth=2)
+    plt.gca().set_yticks([])  # This removes the y-axis ticks
+    plt.grid(False)  # Ensure no other grid lines interfere
+    plt.savefig(save_path)
+
+
 def plot_svd(feats, save_path):
     C = np.cov(feats.T, bias=True)
     U, s, Vh = np.linalg.svd(C)
@@ -62,22 +87,23 @@ def plot_svd(feats, save_path):
     plt.savefig(save_path)
 
 def plot_error_distribution(data_dist, label2error, pic_name, pic_directory="./pics/error_distribution/", ref_errors=None):
-    ages = np.arange(0, 102)  # Ages from 0 to 101
+    max_age = 101
+    ages = np.arange(0, max_age+1)  # Ages from 0 to 101 or 186
     if isinstance(label2error[0], list):
         label2error = { int(lab): sum(errors)/len(errors) for lab, errors in label2error.items() if len(errors) > 0 }
     label2error = dict(sorted(label2error.items()))
 
     # Create num_samples and mae_dist (or mae_gains)
-    num_samples = np.zeros(102)
+    num_samples = np.zeros(max_age+1)
     num_samples[list(data_dist.keys())] += np.array(list(data_dist.values()))
     if ref_errors is not None:
         if isinstance(ref_errors[0], list):
             ref_errors = { int(lab): sum(errors)/len(errors) for lab, errors in ref_errors.items() if len(errors) > 0 }
         ref_errors = dict(sorted(ref_errors.items()))
-        mae_gains = np.zeros(102)
-        mae_gains[list(label2error.keys())] += np.array(list(label2error.values())) - np.array(list(ref_errors.values()))
+        mae_gains = np.zeros(max_age+1)
+        mae_gains[list(label2error.keys())] += (np.array(list(label2error.values())) - np.array(list(ref_errors.values()))) * 100 / np.array(list(ref_errors.values())) 
     else:
-        mae_dist = np.zeros(102)
+        mae_dist = np.zeros(max_age+1)
         mae_dist[list(label2error.keys())] += np.array(list(label2error.values()))
 
     # Create a figure with two subplots
@@ -92,13 +118,116 @@ def plot_error_distribution(data_dist, label2error, pic_name, pic_directory="./p
     axs[1].set_xlabel('Target value (Age)')
     if ref_errors is not None:
         axs[1].bar(ages, mae_gains, color='orange')
-        axs[1].set_ylabel('MAE gains')
+        axs[1].set_ylabel('MAE gains (%)')
         axs[1].axhline(0, color='gray', linewidth=0.8)  # Zero line for reference
         pic_name += "_mae_gains"
     else:
         axs[1].bar(ages, mae_dist, color='orange')
         axs[1].set_ylabel('MAE')
     
+    if not os.path.exists(pic_directory):
+        os.makedirs(pic_directory)
+
+    plt.savefig(os.path.join(pic_directory, f"{pic_name}.png"))
+
+def plot_knbr_ydiffs_distribution(Z, y, data_dist, pic_name, pic_directory="./pics/knbr_ydiffs/", k=5, ref_ydiffs=None):
+    from sklearn.neighbors import NearestNeighbors
+    nbrs = NearestNeighbors(n_neighbors=5, algorithm='brute', metric='l2').fit(Z)
+    distances, indices = nbrs.kneighbors(Z, n_neighbors=k)
+    nbrs_y = y[indices[:, 1:]] # [N, k]
+    avg_nbrs_y_diffs = np.abs(y[:, None] - nbrs_y).mean(1)
+    age2nbr_ydiffs = defaultdict(list)
+    for y, ydiffs in zip(y, avg_nbrs_y_diffs):
+        age2nbr_ydiffs[y].append(ydiffs)
+    age2nbr_ydiffs = { int(lab): sum(diffs)/len(diffs) for lab, diffs in age2nbr_ydiffs.items() if len(diffs) > 0 }
+    age2nbr_ydiffs = dict(sorted(age2nbr_ydiffs.items()))
+    
+    max_age = 101
+    ages = np.arange(0, max_age+1)  # Ages from 0 to 101 or 186
+    num_samples = np.zeros(max_age+1)
+    num_samples[list(data_dist.keys())] += np.array(list(data_dist.values()))
+    nbr_ydiffs = np.zeros(max_age+1)
+    nbr_ydiffs[list(age2nbr_ydiffs.keys())] += np.array(list(age2nbr_ydiffs.values()))
+
+    fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    axs[0].bar(ages, num_samples, color='blue')
+    axs[0].set_ylabel('# of training samples')
+    axs[0].set_title(f'Label Distribution and {k-1}-nearest-neighbors label differences by Age')
+    axs[1].bar(ages, nbr_ydiffs, color='orange')
+    axs[1].set_ylabel('avg. label differences')
+
+    if not os.path.exists(pic_directory):
+        os.makedirs(pic_directory)
+
+    plt.savefig(os.path.join(pic_directory, f"{pic_name}.png"))
+    print(f"Total avg. {k-1} neighbors' y differences {avg_nbrs_y_diffs.mean()}")
+
+    return age2nbr_ydiffs
+
+def plot_std_ydiffs_distribution(Z, y, data_dist, pic_name, pic_directory="./pics/std_nbr_ydiffs/", ref_ydiffs=None):
+    all_dists = np.linalg.norm(Z[:, None, :] - Z[None, :, :], axis=-1)
+    dists_std = 3 * np.std(all_dists, axis=0)
+    y_diffs = np.abs(y[:, None] - y[None, :])
+    mask = all_dists < dists_std
+    avg_y_diffs = np.where(mask, y_diffs, 0).sum(1) / mask.sum(1)
+    avg_y_diffs_reduced = defaultdict(list)
+    for y, diffs in zip(y, avg_y_diffs):
+        avg_y_diffs_reduced[y].append(diffs)
+    avg_y_diffs_reduced = { int(lab): sum(diffs)/len(diffs) for lab, diffs in avg_y_diffs_reduced.items() if len(diffs) > 0 }
+    avg_y_diffs_reduced = dict(sorted(avg_y_diffs_reduced.items()))
+    
+    max_age = 101
+    ages = np.arange(0, max_age+1)  # Ages from 0 to 101 or 186
+    num_samples = np.zeros(max_age+1)
+    num_samples[list(data_dist.keys())] += np.array(list(data_dist.values()))
+    nbr_ydiffs = np.zeros(max_age+1)
+    nbr_ydiffs[list(avg_y_diffs_reduced.keys())] += np.array(list(avg_y_diffs_reduced.values()))
+
+    fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    axs[0].bar(ages, num_samples, color='blue')
+    axs[0].set_ylabel('# of training samples')
+    axs[0].set_title('Label Distribution and std label differences by Age')
+    axs[1].bar(ages, nbr_ydiffs, color='orange')
+    axs[1].set_ylabel('avg. label differences')
+
+    if not os.path.exists(pic_directory):
+        os.makedirs(pic_directory)
+
+    plt.savefig(os.path.join(pic_directory, f"{pic_name}.png"))
+
+    return avg_y_diffs_reduced
+
+def plot_correlation_distribution(Z, y, data_distribution, pic_name, pic_directory="./pics/corr_distribution/"):
+    pairwise_dists = np.linalg.norm(Z[:, None, :] - Z[None, :, :], axis=-1)
+    y_diffs = np.abs(y[:, None] - y[None, :])
+    all_corrs = np.array([ np.corrcoef(dists, yd)[0, 1] for (dists, yd) in zip(pairwise_dists, y_diffs) ])
+    reduced_corr = defaultdict(list)
+    for corr, _y in zip(all_corrs, y):
+        reduced_corr[_y].append(corr)
+    reduced_corr = { int(lab): sum(scores)/len(scores) for lab, scores in reduced_corr.items() if len(scores) > 0 }
+    reduced_corr = dict(sorted(reduced_corr.items()))
+    min_corr_y = min(reduced_corr, key=reduced_corr.get)
+    print(f"min correlation's age {min_corr_y}, min correlation value {reduced_corr[min_corr_y]}")
+    
+    ages = np.arange(0, 102)  # Ages from 0 to 101
+    num_samples = np.zeros(102)
+    num_samples[list(data_distribution.keys())] += np.array(list(data_distribution.values()))
+    correlations = np.zeros(102)
+    correlations[list(reduced_corr.keys())] += np.array(list(reduced_corr.values()))
+    # print(np.corrcoef(correlations, num_samples)[0, 1])
+
+    # Create a figure with two subplots
+    fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    # Plot label distribution
+    axs[0].bar(ages, num_samples, color='blue')
+    axs[0].set_ylabel('# of training samples')
+    axs[0].set_title(f'Avg. correlation: {all_corrs.mean()}')
+
+    # Plot correlations
+    axs[1].set_xlabel('Target value (Age)')
+    axs[1].bar(ages, correlations, color='orange')
+    axs[1].set_ylabel('Cor(z_ij, y_ij)')
 
     if not os.path.exists(pic_directory):
         os.makedirs(pic_directory)
@@ -219,7 +348,7 @@ def check_delta_order(age2feats: dict):
 
 def compute_knn(Z, y, k: int=5):
     from sklearn.neighbors import NearestNeighbors
-    nbrs = NearestNeighbors(n_neighbors=k, algorithm='brute', metric='l2').fit(Z)
+    nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='brute', metric='l2').fit(Z)
     distances, indices = nbrs.kneighbors(Z)
     nbrs_y = y[indices[:, 1:]] # [N, k]
     avg_nbrs_y_diffs = np.abs(y[:, None] - nbrs_y).mean()

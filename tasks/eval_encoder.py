@@ -16,6 +16,7 @@ from loss import *
 # Others
 from exp_utils import *
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 
 class EvalEncoder(BaseTask):
@@ -28,7 +29,9 @@ class EvalEncoder(BaseTask):
         parser.add_argument('--add_sup_resnet', type=str, default=None, help='whether to add supervised ResNet')
         parser.add_argument('--regerssor_ckpt', type=str, default=None, help='path to the trained regressor')
         parser.add_argument('--umap_pic_name', type=str, default=None, help='Name of the umap picture')
-        parser.add_argument('--error_pic_name', type=str, default=None, help='Name of the umap picture')
+        parser.add_argument('--error_pic_name', type=str, default=None, help='Name of the error picture')
+        parser.add_argument('--ydiff_pic_name', type=str, default=None, help='Name of the ydiff picture')
+        parser.add_argument('--k', type=int, default=5)
 
         return parser
 
@@ -47,19 +50,6 @@ class EvalEncoder(BaseTask):
         print(f"<=== Epoch [{ckpt['epoch']}] checkpoint Loaded from {self.opt.ckpt}!")
         self.model = model
 
-        # Load regressor
-        if self.opt.regerssor_ckpt is not None:
-            dim_in = model_dict[self.opt.Encoder.type][1]
-            dim_out = get_label_dim(self.opt.data.dataset)
-            regressor = torch.nn.Linear(dim_in, dim_out).cuda()
-            reg_ckpt = torch.load(self.opt.regerssor_ckpt)
-            if "model" in reg_ckpt:
-                regressor.load_state_dict(reg_ckpt["model"])
-            else:
-                regressor.load_state_dict(reg_ckpt["state_dict"])
-            print(f"<=== Epoch [{ckpt['epoch']}] regressor checkpoint Loaded from {self.opt.regerssor_ckpt}!")
-            self.regressor = regressor
-
         # Add supervised resnet for computing mae gains
         if self.opt.add_sup_resnet is not None:
             assert os.path.exists(self.opt.add_sup_resnet), self.opt.add_sup_resnet
@@ -68,6 +58,19 @@ class EvalEncoder(BaseTask):
             supResNet.load_state_dict(torch.load(self.opt.add_sup_resnet, map_location='cpu')["model"])
             self.supResNet = supResNet.cuda()
             self.label2error_supResNet = defaultdict(list) # Collecting testing errors of the reference supresnet
+        else:
+            # Load regressor
+            if self.opt.regerssor_ckpt is not None:
+                dim_in = model_dict[self.opt.Encoder.type][1]
+                dim_out = get_label_dim(self.opt.data.dataset)
+                regressor = torch.nn.Linear(dim_in, dim_out).cuda()
+                reg_ckpt = torch.load(self.opt.regerssor_ckpt)
+                if "model" in reg_ckpt:
+                    regressor.load_state_dict(reg_ckpt["model"])
+                else:
+                    regressor.load_state_dict(reg_ckpt["state_dict"])
+                print(f"<=== Epoch [{ckpt['epoch']}] regressor checkpoint Loaded from {self.opt.regerssor_ckpt}!")
+                self.regressor = regressor
 
         # Set criterion
         # self.criterion = torch.nn.L1Loss().cuda()
@@ -111,7 +114,7 @@ class EvalEncoder(BaseTask):
         r2metric = R2Score()
 
         with torch.no_grad():
-            for data_dict in tqdm(self.val_loader):
+            for data_dict in tqdm(self.train_loader):
                 images = data_dict["img"].cuda(non_blocking=True)
                 labels = data_dict["label"].cuda(non_blocking=True)
                 bsz = labels.shape[0]
@@ -121,7 +124,7 @@ class EvalEncoder(BaseTask):
                     features = self.model.extract_features(images)
                     output = self.model.fc(features)
                 else:
-                    features = self.model.encoder(images)
+                    features = self.model(images)
                     if hasattr(self, "regressor"):
                         output = self.regressor(features)
 
@@ -173,7 +176,7 @@ class EvalEncoder(BaseTask):
             age2feats = dict(sorted(age2feats.items())) 
         Z = np.concatenate([ feats for feats in age2feats.values() ], axis=0) 
         y = np.array(sum([[age] * age2feats[age].shape[0] for age in age2feats], []))
-
+        data_occurences = self.train_dataset.get_data_occurences()
 
         # Plot 2d umap
         if self.opt.umap_pic_name is not None:
@@ -186,8 +189,61 @@ class EvalEncoder(BaseTask):
         # Plot error distribution
         if self.opt.error_pic_name is not None:
             plot_error_distribution(
-                data_dist=self.train_dataset.get_data_occurences(),
+                data_dist=data_occurences,
                 label2error=label2error,
                 pic_name=self.opt.error_pic_name,
                 ref_errors=getattr(self, "label2error_supResNet", None)
             )
+
+        label2error_reduced = { int(lab): sum(errors)/len(errors) for lab, errors in label2error.items() if len(errors) > 0 }
+        label2error_reduced = dict(sorted(label2error_reduced.items()))
+        # max_error_lab = max(label2error_reduced, key=label2error_reduced.get)
+        # print(max_error_lab)
+        # print(label2error[max_error_lab])
+        # max_error_feats = age2feats[max_error_lab]
+        # pairwise_dists = np.linalg.norm(max_error_feats[:, None, :] - Z[None, :, :], axis=-1)
+        # pairwise_dists[pairwise_dists == 0] = 1
+        # print((np.abs(max_error_lab - y)[None, :] / pairwise_dists).mean(1))
+        # print(f"Max data occurences: {max(data_occurences, key=data_occurences.get)}")
+        # plot_correlation_distribution(Z, y, data_occurences, pic_name="e2e_l1")
+
+        # plt.imshow(pairwise_dists, cmap="Oranges")
+        # plt.colorbar()
+        # plt.gca().set_yticks([])  # This removes the y-axis ticks
+        # plt.grid(False)  # Ensure no other grid lines interfere
+        # plt.savefig("test.png")
+
+        # if hasattr(self, "label2error_supResNet"):
+        #     uniform_data_num = 100 # 2 * round(len(self.train_dataset) / 102)
+        #     print(uniform_data_num)
+        #     zero_shot = {}
+        #     many_shot = {}
+        #     few_shot = {}
+        #     for age in label2error:
+        #         mae_gains = (np.array(label2error[age]) - np.array(self.label2error_supResNet[age])).sum()
+        #         if age not in data_occurences:
+        #             zero_shot[age] = mae_gains
+        #         elif data_occurences[age] >= uniform_data_num:
+        #             many_shot[age] = mae_gains
+        #         else:
+        #             few_shot[age] = mae_gains
+            
+        #     def compute_improve_percent(score_dict: dict):
+        #         if len(score_dict) == 0: return 0
+        #         total_num = 0
+        #         for score in score_dict.values():
+        #             if score < 0:
+        #                 total_num += 1
+        #         return total_num / len(score_dict)
+            
+        #     print(f"Many shot total mae gains: {sum(many_shot.values())}")
+        #     print(f"Many shot mae improve percent: {compute_improve_percent(many_shot):.3f}")
+        #     print(f"Few shot total mae gains: {sum(few_shot.values())}")
+        #     print(f"Few shot mae improve percent: {compute_improve_percent(few_shot):.3f}")
+        #     print(f"Zero shot total mae gains: {sum(zero_shot.values())}")
+
+        age2nbr_ydiffs = plot_knbr_ydiffs_distribution(Z, y, data_occurences, pic_name=self.opt.ydiff_pic_name, k=self.opt.k + 1)
+        print(np.corrcoef(list(age2nbr_ydiffs.values()), list(label2error_reduced.values()))[0,1])
+
+        # avg_y_diffs_reduced = plot_std_ydiffs_distribution(Z, y, data_occurences, "e2e_l1")
+        # print(np.corrcoef(list(avg_y_diffs_reduced.values()), list(label2error_reduced.values()))[0,1])

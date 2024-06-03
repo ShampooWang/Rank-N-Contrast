@@ -25,15 +25,16 @@ Encoder:
     weight_decay: 0.0001
     momentum: 0.9
   loss:
-    loss_type: "RnC"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise", "ProbRank"]
+    loss_type: "pairwise"  # choices=["deltaorder...", "RnC", "pointwise", "pairwise", "ProbRank", "knnRnC"]
+    eps: 0.5
     # sigma: 5.0
-    # delta: 2.0
+    delta: 1.0
     # t: 4.0
     # eps: 0.01
     # feat_pen: 0.01
     # temp: 2.0
     # feature_norm: l2  # choices=['l1', 'l2']
-    # objective: correlation  # choices=['l1', 'l2', 'huber', 'covariance', 'correlation', 'ordinal']
+    objective: l1  # choices=['l1', 'l2', 'huber', 'covariance', 'correlation', 'ordinal']
 
 Regressor:
   bias: True

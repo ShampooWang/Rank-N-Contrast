@@ -1,42 +1,22 @@
 import torch
-import torch.utils
-import torch.utils.data
-import datasets
-from utils import set_seed, seed_worker
-from PIL import Image
-from torchvision import transforms
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+import os
+import matplotlib.pyplot as plt
 
-def main(seed):
-    img = Image.open("/tmp2/jeffwang/Rank-N-Contrast/datasets/AgeDB/AgeDB_aug/17_MariaCallas_33_f/view0.jpg")
-    to_tensor = transforms.Compose([transforms.ToTensor(),])
-    print(to_tensor(img))
-    print(to_tensor(img.convert("RGB")))
-    # set_seed(seed)
-    # g = torch.Generator()
-    # g.manual_seed(seed)
-    # dataset = datasets.__dict__["AgeDB"]
-    # train_dataset = dataset(
-    #     seed=seed,
-    #     data_folder="./datasets/AgeDB",
-    #     aug="crop,flip,color,grayscale",
-    #     split='train'
-    # )
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, 
-    #     batch_size=4, 
-    #     shuffle=True, 
-    #     num_workers=4, 
-    #     pin_memory=True,
-    #     worker_init_fn=seed_worker,
-    #     generator=g
-    # )
+def get_distribution(data: pd.DataFrame):
+   labels, occurence = np.unique(data["age"], return_counts=True)
+   return { int(age): occ for (age, occ) in zip(labels, occurence) }
 
-    # for i in range(3):
-    #     for idx, data_dict in enumerate(train_loader):
-    #         if idx == 0:
-    #             print(data_dict["label"])
-
-
-
+def main():
+   data = pd.read_csv("/tmp2/jeffwang/Rank-N-Contrast/datasets/AgeDB/agedb.csv")
+   train_data = data[data["split"] == "train"]
+   data_occ = get_distribution(train_data)
+   total = 0
+   for age, occ in data_occ.items():
+      total += age * occ
+   print(total / sum(data_occ.values()))
+   
 if __name__ == "__main__":
-    main(0)
+    main()

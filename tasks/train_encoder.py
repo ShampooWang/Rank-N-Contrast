@@ -23,6 +23,12 @@ print = logging.info
 
 
 class TrainEncoder(BaseTask):
+    def add_general_arguments(self, parser):
+        parser = super().add_general_arguments(parser)
+        parser.add_argument('--k', type=int, default=5)
+
+        return parser
+    
     def create_modelName_and_saveFolder(self, opt):
         loss_type = opt.Encoder.loss.loss_type 
         if "deltaorder" in loss_type:
@@ -31,10 +37,16 @@ class TrainEncoder(BaseTask):
         elif loss_type == "RnC":
             opt.model_name = '{}_{}_ep_{}'. \
                 format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs)
+        elif loss_type == "knnRnC":
+            opt.model_name = '{}_{}_ep_{}_k_{}'. \
+                format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs, getattr(opt.Encoder.loss, "k", 50))
         elif loss_type == "pairwise":
             delta =  getattr(opt.Encoder.loss, "delta", 0.3)
             opt.model_name = '{}_{}_ep_{}_delta_{}_obj_{}'. \
                 format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs, delta, opt.Encoder.loss.objective) 
+            eps = getattr(opt.Encoder.loss, "eps", 0.0)
+            if eps > 0.0:
+                opt.model_name += f"_eps_{eps}"
         elif loss_type  == "pointwise":
             opt.model_name = '{}_{}_ep_{}_norm_{}_obj_{}'. \
                 format(opt.data.dataset, opt.Encoder.type, opt.Encoder.trainer.epochs, opt.Encoder.loss.feature_norm, opt.Encoder.loss.objective)  
@@ -76,10 +88,12 @@ class TrainEncoder(BaseTask):
         self.model = Encoder(name=self.opt.Encoder.type)
         if config.loss_type == "RnC":
             self.criterion = RnCLoss()
+        elif config.loss_type == "knnRnC":
+            self.criterion = kNNRnCLoss(k=getattr(config, "k", 50))
         elif config.loss_type == "pointwise":
             self.criterion = PointwiseRankingLoss(feature_norm=config.feature_norm, objective=config.objective)
         elif config.loss_type == "pairwise":
-            self.criterion = PairwiseRankingLoss(delta=getattr(config, "delta", 0.3), objective=config.objective)
+            self.criterion = PairwiseRankingLoss(delta=getattr(config, "delta", 0.3), objective=config.objective, eps=getattr(config, "eps", 0.0))
         elif config.loss_type == "ProbRank":
             self.criterion = ProbRankingLoss(t=getattr(config, "t", 1.0))
         else:
@@ -198,9 +212,9 @@ class TrainEncoder(BaseTask):
 
         Z = np.concatenate(Z, axis=0)
         y = np.concatenate(y, axis=0)
-        avg_nbr_diffs = compute_knn(Z, y)
+        avg_nbr_diffs = compute_knn(Z, y, self.opt.k)
 
-        print(f"Val loss: {losses.avg:.3f}\t5 nearest neighbors label differences: {avg_nbr_diffs:.3f}")
+        print(f"Val loss: {losses.avg:.3f}\t{self.opt.k} nearest neighbors label differences: {avg_nbr_diffs:.3f}")
 
         return losses.avg, avg_nbr_diffs
 
@@ -214,7 +228,11 @@ class TrainEncoder(BaseTask):
         print("Adding regressor for the regression evaluation")
         test_regression_freq = getattr(self.opt.Encoder.trainer, "test_regression_freq", -1)
         self.regressor_trainer = TrainRegressor()
+        parser.resume = None # Resume ckpt is for encoder but not regressor
         self.regressor_trainer.parse_option(parser, log_file=False)
+
+        if self.opt.resume is not None and os.path.exists(best_val_loss_pth):
+            best_loss = torch.load(best_val_loss_pth)["best_loss"]
 
         # training routine
         for epoch in range(self.start_epoch, self.opt.Encoder.trainer.epochs + 1):
@@ -242,6 +260,7 @@ class TrainEncoder(BaseTask):
         self.save_model(self.opt.Encoder.trainer.epochs, last_pth)
         self.regressor_trainer.update_ckpt(last_pth)
         self.regressor_trainer.run(parser)
+
 
         # best val loss
         # print(f"Best pretraining validation loss: {best_loss:.3f}")

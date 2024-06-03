@@ -130,17 +130,17 @@ def create_encoder_and_regressor_params():
         )
         del model
 
-    # for model_name in model_list:
-    #     save_model(Encoder(model_name), os.path.join(model_dir, f"{model_name}.pth"))
+    for model_name in model_list:
+        save_model(Encoder(model_name), os.path.join(model_dir, f"{model_name}.pth"))
 
     for model_name in model_list:
         save_model(SupResNet(model_name, num_classes=1), os.path.join(model_dir, f"sup{model_name}.pth"))
 
-    # for model_name in model_list:
-    #     dim_in = model_dict[model_name][1]
-    #     dim_out = 1
-    #     model = torch.nn.Linear(dim_in, dim_out)
-    #     save_model(model, os.path.join(model_dir, f"{model_name}_regressor.pth"))
+    for model_name in model_list:
+        dim_in = model_dict[model_name][1]
+        dim_out = 1
+        model = torch.nn.Linear(dim_in, dim_out)
+        save_model(model, os.path.join(model_dir, f"{model_name}_regressor.pth"))
 
 if __name__ == "__main__":
     create_encoder_and_regressor_params()

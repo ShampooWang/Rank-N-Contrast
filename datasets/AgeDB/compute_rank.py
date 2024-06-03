@@ -8,14 +8,15 @@ import torch
 def main():
     # Load the data
     data = pd.read_csv('agedb.csv')
-
-    y_ranges = set(data["age"])
+    train_data = data[data["split"] != "test"]
+    y_ranges = set(train_data["age"])
     y_to_rank = { y: rank for rank, y in enumerate(y_ranges) }
     with open("agedb_rank.csv", "w") as f:
         f.write("age,path,split,rank\n")
         for i in range(len(data)):
             row = data.iloc[i]
-            f.write(f"{row['age']},{row['path']},{row['split']},{y_to_rank[row['age']]}\n")
+            rank = y_to_rank[row['age']] if row['split'] != "test" else -1
+            f.write(f"{row['age']},{row['path']},{row['split']},{rank}\n")
     rank_data = pd.read_csv('agedb_rank.csv')
     print(rank_data)
     
